@@ -35,6 +35,7 @@ type Options struct {
 	CookieName            string
 	RelayStateFunc        func(w http.ResponseWriter, r *http.Request) string
 	LogoutBindings        []string
+	ForceRedirectUrl      *url.URL
 }
 
 func getDefaultSigningMethod(signer crypto.Signer) jwt.SigningMethod {
@@ -174,6 +175,12 @@ func DefaultAssertionHandler(_ Options) NopAssertionHandler {
 // replacing and/or changing Session, RequestTracker, and ServiceProvider
 // in the returned Middleware.
 func New(opts Options) (*Middleware, error) {
+
+	forceRedirectUrl := ""
+	if opts.ForceRedirectUrl != nil {
+		forceRedirectUrl = opts.ForceRedirectUrl.String()
+	}
+
 	m := &Middleware{
 		ServiceProvider:  DefaultServiceProvider(opts),
 		Binding:          "",
@@ -181,6 +188,7 @@ func New(opts Options) (*Middleware, error) {
 		OnError:          DefaultOnError,
 		Session:          DefaultSessionProvider(opts),
 		AssertionHandler: DefaultAssertionHandler(opts),
+		ForceRedirectUrl: forceRedirectUrl,
 	}
 	m.RequestTracker = DefaultRequestTracker(opts, &m.ServiceProvider)
 	if opts.UseArtifactResponse {

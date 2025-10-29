@@ -49,7 +49,7 @@ type Middleware struct {
 	RequestTracker   RequestTracker
 	Session          SessionProvider
 	AssertionHandler AssertionHandler
-	ForceRedirect    string
+	ForceRedirectUrl string
 	ACSHandler       gin.HandlerFunc
 	MetadataHandler  gin.HandlerFunc
 }
@@ -221,6 +221,10 @@ func (m *Middleware) CreateSessionFromAssertion(c *gin.Context, assertion *saml.
 
 	if err := m.Session.CreateSession(c, assertion); err != nil {
 		return "", m.OnError(c, err)
+	}
+
+	if m.ForceRedirectUrl != "" {
+		return m.ForceRedirectUrl, nil
 	}
 
 	return redirectURI, nil
