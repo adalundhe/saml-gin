@@ -3,6 +3,7 @@ package samlsp
 import (
 	"bytes"
 	"encoding/xml"
+	"log/slog"
 	"net/http"
 
 	"github.com/adalundhe/saml-gin"
@@ -172,6 +173,7 @@ func (m *Middleware) HandleStartAuthFlow(c *gin.Context) {
 			})
 			return
 		}
+		slog.Info("Redirecting to:", slog.Any("url", redirectURL))
 		c.Header("Location", redirectURL.String())
 		c.Redirect(http.StatusFound, redirectURL.String())
 		return
@@ -223,10 +225,7 @@ func (m *Middleware) CreateSessionFromAssertion(c *gin.Context, assertion *saml.
 		return "", m.OnError(c, err)
 	}
 
-	if m.ForceRedirectUrl != "" {
-		return m.ForceRedirectUrl, nil
-	}
-
+	slog.Info("Redirecting to:", slog.Any("url", redirectURI))
 	return redirectURI, nil
 }
 
