@@ -15,7 +15,7 @@ package main
 // 	"net/url"
 // 	"strings"
 
-// 	"github.com/crewjam/saml/samlsp"
+// 	"github.com/adalundhe/saml-gin/samlsp"
 // )
 
 // var links = map[string]Link{}

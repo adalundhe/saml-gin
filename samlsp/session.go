@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/crewjam/saml"
+	"github.com/adalundhe/saml-gin"
 	"github.com/gin-gonic/gin"
 )
 

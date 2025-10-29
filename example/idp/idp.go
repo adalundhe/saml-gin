@@ -11,8 +11,8 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/crewjam/saml/logger"
-	"github.com/crewjam/saml/samlidp"
+	"github.com/adalundhe/saml-gin/logger"
+	"github.com/adalundhe/saml-gin/samlidp"
 )
 
 var key = func() crypto.PrivateKey {

@@ -16,8 +16,8 @@ import (
 	is "gotest.tools/assert/cmp"
 	"gotest.tools/golden"
 
-	"github.com/crewjam/saml"
-	"github.com/crewjam/saml/logger"
+	"github.com/adalundhe/saml-gin"
+	"github.com/adalundhe/saml-gin/logger"
 )
 
 type testRandomReader struct {

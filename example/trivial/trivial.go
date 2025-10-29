@@ -12,7 +12,7 @@ package main
 // 	"net/url"
 // 	"time"
 
-// 	"github.com/crewjam/saml/samlsp"
+// 	"github.com/adalundhe/saml-gin/samlsp"
 // )
 
 // var samlMiddleware *samlsp.Middleware

@@ -27,9 +27,9 @@ import (
 	"github.com/beevik/etree"
 	dsig "github.com/russellhaering/goxmldsig"
 
-	"github.com/crewjam/saml/logger"
-	"github.com/crewjam/saml/testsaml"
-	"github.com/crewjam/saml/xmlenc"
+	"github.com/adalundhe/saml-gin/logger"
+	"github.com/adalundhe/saml-gin/testsaml"
+	"github.com/adalundhe/saml-gin/xmlenc"
 )
 
 type IdentityProviderTest struct {
