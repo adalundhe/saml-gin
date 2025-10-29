@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/loopfz/gadgeto/tonic"
 	dsig "github.com/russellhaering/goxmldsig"
 	"gotest.tools/assert"
 	is "gotest.tools/assert/cmp"
@@ -46,6 +47,34 @@ func (tr *testRandomReader) Read(p []byte) (n int, err error) {
 		tr.Next += 2
 	}
 	return len(p), nil
+}
+
+func testHTTPResponse(r *gin.Engine, req *http.Request, assertions ...func(w *httptest.ResponseRecorder)) {
+
+	// Create a response recorder
+	w := httptest.NewRecorder()
+
+	// Create the service and process the above request.
+	r.ServeHTTP(w, req)
+
+	for _, assertion := range assertions {
+		assertion(w)
+	}
+}
+
+func testMiddlewareRequest(r *gin.Engine, req *http.Request, assertions ...func(w *httptest.ResponseRecorder)) {
+	testHTTPResponse(r, req, assertions...)
+}
+
+func getRouter(withTemplates bool, middleware ...gin.HandlerFunc) *gin.Engine {
+	r := gin.Default()
+	if withTemplates {
+		r.LoadHTMLGlob("templates/*")
+		r.Use(middleware...)
+
+	}
+
+	return r
 }
 
 func NewMiddlewareTest(t *testing.T) *MiddlewareTest {
@@ -122,73 +151,87 @@ func (test *MiddlewareTest) makeTrackedRequest(id string) string {
 
 func TestMiddlewareCanProduceMetadata(t *testing.T) {
 	test := NewMiddlewareTest(t)
-	req, _ := http.NewRequest("GET", "/saml2/metadata", nil)
 
+	req := httptest.NewRequest(http.MethodGet, "/saml2/metadata", nil)
 	resp := httptest.NewRecorder()
-	test.Middleware.ServeHTTP(resp, req)
+	ctx, _ := gin.CreateTestContext(resp)
+	ctx.Request = req
+
+	buffer, err := test.Middleware.ServeMetadata(ctx)
+	assert.NilError(t, err)
 	assert.Check(t, is.Equal(http.StatusOK, resp.Code))
 	assert.Check(t, is.Equal("application/samlmetadata+xml",
 		resp.Header().Get("Content-type")))
-	golden.Assert(t, resp.Body.String(), "expected_middleware_metadata.xml")
-}
 
-func TestMiddlewareFourOhFour(t *testing.T) {
-	test := NewMiddlewareTest(t)
-	req, _ := http.NewRequest("GET", "/this/is/not/a/supported/uri", nil)
-
-	resp := httptest.NewRecorder()
-	test.Middleware.ServeHTTP(resp, req)
-	assert.Check(t, is.Equal(http.StatusNotFound, resp.Code))
-	respBuf, _ := io.ReadAll(resp.Body)
-	assert.Check(t, is.Equal("404 page not found\n", string(respBuf)))
+	golden.Assert(t, string(buffer), "expected_middleware_metadata.xml")
 }
 
 func TestMiddlewareRequireAccountNoCreds(t *testing.T) {
+
 	test := NewMiddlewareTest(t)
 	test.Middleware.ServiceProvider.AcsURL.Scheme = "http"
 
-	handler := test.Middleware.RequireAccount(
-		http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-			panic("not reached")
-		}))
+	handler := test.Middleware.RequireAccount()
 
-	req, _ := http.NewRequest("GET", "/frob", nil)
-	resp := httptest.NewRecorder()
-	handler.ServeHTTP(resp, req)
+	r := getRouter(false)
+	r.Handle(http.MethodGet, "/saml2/metadata", tonic.Handler(test.Middleware.ServeMetadata, http.StatusFound))
+	r.Handle(http.MethodGet, "/saml2/acs", tonic.Handler(test.Middleware.ServeACS, http.StatusFound))
+	r.GET("/frob", handler, func(_ *gin.Context) {
+		panic("not reached")
+	})
 
-	assert.Check(t, is.Equal(http.StatusFound, resp.Code))
-	assert.Check(t, is.Equal("saml_KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6="+
-		test.makeTrackedRequest("id-00020406080a0c0e10121416181a1c1e20222426")+"; Path=/saml2/acs; Max-Age=90; HttpOnly",
-		resp.Header().Get("Set-Cookie")))
+	testMiddlewareRequest(
+		r,
+		httptest.NewRequest(http.MethodGet, "/frob", nil),
+		func(resp *httptest.ResponseRecorder) {
+			assert.Check(t, is.Equal(http.StatusFound, resp.Code))
+		},
+		func(resp *httptest.ResponseRecorder) {
+			assert.Check(t, is.Equal("saml_KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6="+
+				test.makeTrackedRequest("id-00020406080a0c0e10121416181a1c1e20222426")+"; Path=/saml2/acs; Max-Age=90; HttpOnly",
+				resp.Header().Get("Set-Cookie")))
+		},
+		func(resp *httptest.ResponseRecorder) {
+			redirectURL, err := url.Parse(resp.Header().Get("Location"))
+			assert.Check(t, err)
+			decodedRequest, err := testsaml.ParseRedirectRequest(redirectURL)
+			assert.Check(t, err)
+			golden.Assert(t, string(decodedRequest), "expected_authn_request.xml")
+		},
+	)
 
-	redirectURL, err := url.Parse(resp.Header().Get("Location"))
-	assert.Check(t, err)
-	decodedRequest, err := testsaml.ParseRedirectRequest(redirectURL)
-	assert.Check(t, err)
-	golden.Assert(t, string(decodedRequest), "expected_authn_request.xml")
 }
 
 func TestMiddlewareRequireAccountNoCredsSecure(t *testing.T) {
 	test := NewMiddlewareTest(t)
 
-	handler := test.Middleware.RequireAccount(
-		http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-			panic("not reached")
-		}))
+	handler := test.Middleware.RequireAccount()
 
-	req, _ := http.NewRequest("GET", "/frob", nil)
-	resp := httptest.NewRecorder()
-	handler.ServeHTTP(resp, req)
+	r := getRouter(false)
+	r.Handle(http.MethodGet, "/saml2/metadata", tonic.Handler(test.Middleware.ServeMetadata, http.StatusFound))
+	r.Handle(http.MethodGet, "/saml2/acs", tonic.Handler(test.Middleware.ServeACS, http.StatusFound))
+	r.GET("/frob", handler, func(ctx *gin.Context) {
+		panic("not reached")
+	})
 
-	assert.Check(t, is.Equal(http.StatusFound, resp.Code))
-	assert.Check(t, is.Equal("saml_KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6="+test.makeTrackedRequest("id-00020406080a0c0e10121416181a1c1e20222426")+"; Path=/saml2/acs; Max-Age=90; HttpOnly; Secure",
-		resp.Header().Get("Set-Cookie")))
+	testMiddlewareRequest(
+		r,
+		httptest.NewRequest(http.MethodGet, "/frob", nil),
+		func(resp *httptest.ResponseRecorder) {
+			assert.Check(t, is.Equal(http.StatusFound, resp.Code))
+		},
+		func(resp *httptest.ResponseRecorder) {
+			assert.Check(t, is.Equal("saml_KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6="+test.makeTrackedRequest("id-00020406080a0c0e10121416181a1c1e20222426")+"; Path=/saml2/acs; Max-Age=90; HttpOnly; Secure",
+				resp.Header().Get("Set-Cookie")))
 
-	redirectURL, err := url.Parse(resp.Header().Get("Location"))
-	assert.Check(t, err)
-	decodedRequest, err := testsaml.ParseRedirectRequest(redirectURL)
-	assert.Check(t, err)
-	golden.Assert(t, string(decodedRequest), "expected_authn_request_secure.xml")
+			redirectURL, err := url.Parse(resp.Header().Get("Location"))
+
+			assert.Check(t, err)
+			decodedRequest, err := testsaml.ParseRedirectRequest(redirectURL)
+			assert.Check(t, err)
+			golden.Assert(t, string(decodedRequest), "expected_authn_request_secure.xml")
+		},
+	)
 }
 
 func TestMiddlewareRequireAccountNoCredsPostBinding(t *testing.T) {
@@ -197,84 +240,113 @@ func TestMiddlewareRequireAccountNoCredsPostBinding(t *testing.T) {
 	assert.Check(t, is.Equal("",
 		test.Middleware.ServiceProvider.GetSSOBindingLocation(saml.HTTPRedirectBinding)))
 
-	handler := test.Middleware.RequireAccount(
-		http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-			panic("not reached")
-		}))
+	handler := test.Middleware.RequireAccount()
 
-	req, _ := http.NewRequest("GET", "/frob", nil)
-	resp := httptest.NewRecorder()
-	handler.ServeHTTP(resp, req)
+	r := getRouter(false)
+	r.Handle(http.MethodGet, "/saml2/metadata", tonic.Handler(test.Middleware.ServeMetadata, http.StatusFound))
+	r.Handle(http.MethodGet, "/saml2/acs", tonic.Handler(test.Middleware.ServeACS, http.StatusFound))
+	r.GET("/frob", handler, func(ctx *gin.Context) {
+		panic("not reached")
+	})
 
-	assert.Check(t, is.Equal(http.StatusOK, resp.Code))
-	assert.Check(t, is.Equal("saml_KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6="+test.makeTrackedRequest("id-00020406080a0c0e10121416181a1c1e20222426")+"; Path=/saml2/acs; Max-Age=90; HttpOnly; Secure",
-		resp.Header().Get("Set-Cookie")))
+	testMiddlewareRequest(
+		r,
+		httptest.NewRequest(http.MethodGet, "/frob", nil),
+		func(resp *httptest.ResponseRecorder) {
+			assert.Check(t, is.Equal(http.StatusOK, resp.Code))
+		},
+		func(resp *httptest.ResponseRecorder) {
+			assert.Check(t, is.Equal("saml_KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6="+test.makeTrackedRequest("id-00020406080a0c0e10121416181a1c1e20222426")+"; Path=/saml2/acs; Max-Age=90; HttpOnly; Secure",
+				resp.Header().Get("Set-Cookie")))
 
-	golden.Assert(t, resp.Body.String(), "expected_post_binding_response.html")
+			golden.Assert(t, resp.Body.String(), "expected_post_binding_response.html")
 
-	// check that the CSP script hash is set correctly
-	scriptContent := "document.getElementById('SAMLSubmitButton').style.visibility=\"hidden\";document.getElementById('SAMLRequestForm').submit();"
-	scriptSum := sha256.Sum256([]byte(scriptContent))
-	scriptHash := base64.StdEncoding.EncodeToString(scriptSum[:])
-	assert.Check(t, is.Equal("default-src; script-src 'sha256-"+scriptHash+"'; reflected-xss block; referrer no-referrer;",
-		resp.Header().Get("Content-Security-Policy")))
+			// check that the CSP script hash is set correctly
+			scriptContent := "document.getElementById('SAMLSubmitButton').style.visibility=\"hidden\";document.getElementById('SAMLRequestForm').submit();"
+			scriptSum := sha256.Sum256([]byte(scriptContent))
+			scriptHash := base64.StdEncoding.EncodeToString(scriptSum[:])
+			assert.Check(t, is.Equal("default-src; script-src 'sha256-"+scriptHash+"'; reflected-xss block; referrer no-referrer;",
+				resp.Header().Get("Content-Security-Policy")))
 
-	assert.Check(t, is.Equal("text/html", resp.Header().Get("Content-type")))
+			assert.Check(t, is.Equal("text/html", resp.Header().Get("Content-type")))
+		},
+	)
+
 }
 
 func TestMiddlewareRequireAccountCreds(t *testing.T) {
-	test := NewMiddlewareTest(t)
-	handler := test.Middleware.RequireAccount(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			genericSession := SessionFromContext(r.Context())
-			jwtSession := genericSession.(JWTSessionClaims)
-			assert.Check(t, is.Equal("555-5555", jwtSession.Attributes.Get("telephoneNumber")))
-			assert.Check(t, is.Equal("And I", jwtSession.Attributes.Get("sn")))
-			assert.Check(t, is.Equal("urn:mace:dir:entitlement:common-lib-terms", jwtSession.Attributes.Get("eduPersonEntitlement")))
-			assert.Check(t, is.Equal("", jwtSession.Attributes.Get("eduPersonTargetedID")))
-			assert.Check(t, is.Equal("Me Myself", jwtSession.Attributes.Get("givenName")))
-			assert.Check(t, is.Equal("Me Myself And I", jwtSession.Attributes.Get("cn")))
-			assert.Check(t, is.Equal("myself", jwtSession.Attributes.Get("uid")))
-			assert.Check(t, is.Equal("myself@testshib.org", jwtSession.Attributes.Get("eduPersonPrincipalName")))
-			assert.Check(t, is.DeepEqual([]string{"Member@testshib.org", "Staff@testshib.org"}, jwtSession.Attributes["eduPersonScopedAffiliation"]))
-			assert.Check(t, is.DeepEqual([]string{"Member", "Staff"}, jwtSession.Attributes["eduPersonAffiliation"]))
-			w.WriteHeader(http.StatusTeapot)
-		}))
 
-	req, _ := http.NewRequest("GET", "/frob", nil)
+	test := NewMiddlewareTest(t)
+	handler := test.Middleware.RequireAccount()
+
+	req := httptest.NewRequest(http.MethodGet, "/frob", nil)
 	req.Header.Set("Cookie", ""+
 		"ttt="+test.expectedSessionCookie+"; "+
 		"Path=/; Max-Age=7200")
-	resp := httptest.NewRecorder()
-	handler.ServeHTTP(resp, req)
 
-	assert.Check(t, is.Equal(http.StatusTeapot, resp.Code))
+	r := getRouter(false)
+	r.Handle(http.MethodGet, "/saml2/metadata", tonic.Handler(test.Middleware.ServeMetadata, http.StatusFound))
+	r.Handle(http.MethodGet, "/saml2/acs", tonic.Handler(test.Middleware.ServeACS, http.StatusFound))
+	r.GET("/frob", handler, func(ctx *gin.Context) {
+		genericSession := SessionFromContext(ctx)
+		jwtSession := genericSession.(JWTSessionClaims)
+		assert.Check(t, is.Equal("555-5555", jwtSession.Attributes.Get("telephoneNumber")))
+		assert.Check(t, is.Equal("And I", jwtSession.Attributes.Get("sn")))
+		assert.Check(t, is.Equal("urn:mace:dir:entitlement:common-lib-terms", jwtSession.Attributes.Get("eduPersonEntitlement")))
+		assert.Check(t, is.Equal("", jwtSession.Attributes.Get("eduPersonTargetedID")))
+		assert.Check(t, is.Equal("Me Myself", jwtSession.Attributes.Get("givenName")))
+		assert.Check(t, is.Equal("Me Myself And I", jwtSession.Attributes.Get("cn")))
+		assert.Check(t, is.Equal("myself", jwtSession.Attributes.Get("uid")))
+		assert.Check(t, is.Equal("myself@testshib.org", jwtSession.Attributes.Get("eduPersonPrincipalName")))
+		assert.Check(t, is.DeepEqual([]string{"Member@testshib.org", "Staff@testshib.org"}, jwtSession.Attributes["eduPersonScopedAffiliation"]))
+		assert.Check(t, is.DeepEqual([]string{"Member", "Staff"}, jwtSession.Attributes["eduPersonAffiliation"]))
+		ctx.Writer.WriteHeader(http.StatusTeapot)
+	})
+
+	testMiddlewareRequest(
+		r,
+		req,
+		func(resp *httptest.ResponseRecorder) {
+			assert.Check(t, is.Equal(http.StatusTeapot, resp.Code))
+		},
+	)
+
 }
 
 func TestMiddlewareRequireAccountBadCreds(t *testing.T) {
 	test := NewMiddlewareTest(t)
-	handler := test.Middleware.RequireAccount(
-		http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-			panic("not reached")
-		}))
+	handler := test.Middleware.RequireAccount()
 
-	req, _ := http.NewRequest("GET", "/frob", nil)
+	req := httptest.NewRequest(http.MethodGet, "/frob", nil)
+
 	req.Header.Set("Cookie", ""+
 		"ttt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.yejJbiI6Ik1lIE15c2VsZiBBbmQgSSIsImVkdVBlcnNvbkFmZmlsaWF0aW9uIjoiU3RhZmYiLCJlZHVQZXJzb25FbnRpdGxlbWVudCI6InVybjptYWNlOmRpcjplbnRpdGxlbWVudDpjb21tb24tbGliLXRlcm1zIiwiZWR1UGVyc29uUHJpbmNpcGFsTmFtZSI6Im15c2VsZkB0ZXN0c2hpYi5vcmciLCJlZHVQZXJzb25TY29wZWRBZmZpbGlhdGlvbiI6IlN0YWZmQHRlc3RzaGliLm9yZyIsImVkdVBlcnNvblRhcmdldGVkSUQiOiIiLCJleHAiOjE0NDg5Mzg2MjksImdpdmVuTmFtZSI6Ik1lIE15c2VsZiIsInNuIjoiQW5kIEkiLCJ0ZWxlcGhvbmVOdW1iZXIiOiI1NTUtNTU1NSIsInVpZCI6Im15c2VsZiJ9.SqeTkbGG35oFj_9H-d9oVdV-Hb7Vqam6LvZLcmia7FY; "+
 		"Path=/; Max-Age=7200; Secure")
-	resp := httptest.NewRecorder()
-	handler.ServeHTTP(resp, req)
 
-	assert.Check(t, is.Equal(http.StatusFound, resp.Code))
+	r := getRouter(false)
+	r.Handle(http.MethodGet, "/saml2/metadata", tonic.Handler(test.Middleware.ServeMetadata, http.StatusFound))
+	r.Handle(http.MethodGet, "/saml2/acs", tonic.Handler(test.Middleware.ServeACS, http.StatusFound))
+	r.GET("/frob", handler, func(ctx *gin.Context) {
+		panic("not reached")
+	})
 
-	assert.Check(t, is.Equal("saml_KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6="+test.makeTrackedRequest("id-00020406080a0c0e10121416181a1c1e20222426")+"; Path=/saml2/acs; Max-Age=90; HttpOnly; Secure",
-		resp.Header().Get("Set-Cookie")))
+	testMiddlewareRequest(
+		r,
+		req,
+		func(resp *httptest.ResponseRecorder) {
+			assert.Check(t, is.Equal(http.StatusFound, resp.Code))
 
-	redirectURL, err := url.Parse(resp.Header().Get("Location"))
-	assert.Check(t, err)
-	decodedRequest, err := testsaml.ParseRedirectRequest(redirectURL)
-	assert.Check(t, err)
-	golden.Assert(t, string(decodedRequest), "expected_authn_request_secure.xml")
+			assert.Check(t, is.Equal("saml_KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6="+test.makeTrackedRequest("id-00020406080a0c0e10121416181a1c1e20222426")+"; Path=/saml2/acs; Max-Age=90; HttpOnly; Secure",
+				resp.Header().Get("Set-Cookie")))
+
+			redirectURL, err := url.Parse(resp.Header().Get("Location"))
+			assert.Check(t, err)
+			decodedRequest, err := testsaml.ParseRedirectRequest(redirectURL)
+			assert.Check(t, err)
+			golden.Assert(t, string(decodedRequest), "expected_authn_request_secure.xml")
+		},
+	)
+
 }
 
 func TestMiddlewareRequireAccountExpiredCreds(t *testing.T) {
@@ -284,111 +356,160 @@ func TestMiddlewareRequireAccountExpiredCreds(t *testing.T) {
 		return rv
 	}
 
-	handler := test.Middleware.RequireAccount(
-		http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-			panic("not reached")
-		}))
+	handler := test.Middleware.RequireAccount()
+	r := getRouter(false)
+	r.Handle(http.MethodGet, "/saml2/metadata", tonic.Handler(test.Middleware.ServeMetadata, http.StatusFound))
+	r.Handle(http.MethodGet, "/saml2/acs", tonic.Handler(test.Middleware.ServeACS, http.StatusFound))
+	r.GET("/frob", handler, func(ctx *gin.Context) {
+		panic("not reached")
+	})
 
-	req, _ := http.NewRequest("GET", "/frob", nil)
+	req := httptest.NewRequest(http.MethodGet, "/frob", nil)
 	req.Header.Set("Cookie", ""+
 		"ttt="+test.expectedSessionCookie+"; "+
 		"Path=/; Max-Age=7200")
-	resp := httptest.NewRecorder()
-	handler.ServeHTTP(resp, req)
 
-	assert.Check(t, is.Equal(http.StatusFound, resp.Code))
-	assert.Check(t, is.Equal("saml_KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6="+test.makeTrackedRequest("id-00020406080a0c0e10121416181a1c1e20222426")+"; Path=/saml2/acs; Max-Age=90; HttpOnly; Secure",
-		resp.Header().Get("Set-Cookie")))
+	testMiddlewareRequest(
+		r,
+		req,
+		func(resp *httptest.ResponseRecorder) {
+			assert.Check(t, is.Equal(http.StatusFound, resp.Code))
+			assert.Check(t, is.Equal("saml_KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6="+test.makeTrackedRequest("id-00020406080a0c0e10121416181a1c1e20222426")+"; Path=/saml2/acs; Max-Age=90; HttpOnly; Secure",
+				resp.Header().Get("Set-Cookie")))
 
-	redirectURL, err := url.Parse(resp.Header().Get("Location"))
-	assert.Check(t, err)
-	decodedRequest, err := testsaml.ParseRedirectRequest(redirectURL)
-	assert.Check(t, err)
-	golden.Assert(t, strings.Replace(string(decodedRequest), `IssueInstant="2115-12-01T01:31:21Z"`, `IssueInstant="2015-12-01T01:57:09.123Z"`, 1), "expected_authn_request_secure.xml")
+			redirectURL, err := url.Parse(resp.Header().Get("Location"))
+			assert.Check(t, err)
+			decodedRequest, err := testsaml.ParseRedirectRequest(redirectURL)
+			assert.Check(t, err)
+			golden.Assert(t, strings.Replace(string(decodedRequest), `IssueInstant="2115-12-01T01:31:21Z"`, `IssueInstant="2015-12-01T01:57:09.123Z"`, 1), "expected_authn_request_secure.xml")
+		},
+	)
 }
 
 func TestMiddlewareRequireAccountPanicOnRequestToACS(t *testing.T) {
 	test := NewMiddlewareTest(t)
-	handler := test.Middleware.RequireAccount(
-		http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-			panic("not reached")
-		}))
-
-	req, _ := http.NewRequest("POST", "https://15661444.ngrok.io/saml2/acs", nil)
 	resp := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(resp)
 
-	assert.Check(t, is.Panics(func() { handler.ServeHTTP(resp, req) }))
+	req := httptest.NewRequest(http.MethodPost, "https://15661444.ngrok.io/saml2/acs", nil)
+	ctx.Request = req
+
+	assert.Check(t, is.Panics(func() {
+		_, err := test.Middleware.ServeACS(ctx)
+
+		if err != nil {
+			panic(err)
+		}
+	}))
 }
 
 func TestMiddlewareRequireAttribute(t *testing.T) {
 	test := NewMiddlewareTest(t)
-	handler := test.Middleware.RequireAccount(
-		RequireAttribute("eduPersonAffiliation", "Staff")(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusTeapot)
-			})))
+	requireAccount := test.Middleware.RequireAccount()
+	requireAttribute := RequireAttribute("eduPersonAffiliation", "Staff")
 
-	req, _ := http.NewRequest("GET", "/frob", nil)
+	r := getRouter(false)
+	r.Handle(http.MethodGet, "/saml2/metadata", tonic.Handler(test.Middleware.ServeMetadata, http.StatusFound))
+	r.Handle(http.MethodGet, "/saml2/acs", tonic.Handler(test.Middleware.ServeACS, http.StatusFound))
+	r.GET("/frob", requireAccount, requireAttribute, func(ctx *gin.Context) {
+		ctx.Writer.WriteHeader(http.StatusTeapot)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/frob", nil)
 	req.Header.Set("Cookie", ""+
 		"ttt="+test.expectedSessionCookie+"; "+
 		"Path=/; Max-Age=7200")
-	resp := httptest.NewRecorder()
-	handler.ServeHTTP(resp, req)
 
-	assert.Check(t, is.Equal(http.StatusTeapot, resp.Code))
+	testMiddlewareRequest(
+		r,
+		req,
+		func(resp *httptest.ResponseRecorder) {
+			assert.Check(t, is.Equal(http.StatusTeapot, resp.Code))
+		},
+	)
 }
 
 func TestMiddlewareRequireAttributeWrongValue(t *testing.T) {
 	test := NewMiddlewareTest(t)
-	handler := test.Middleware.RequireAccount(
-		RequireAttribute("eduPersonAffiliation", "DomainAdmins")(
-			http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-				panic("not reached")
-			})))
 
-	req, _ := http.NewRequest("GET", "/frob", nil)
+	requireAccount := test.Middleware.RequireAccount()
+	requireAttribute := RequireAttribute("eduPersonAffiliation", "DomainAdmins")
+
+	r := getRouter(false)
+	r.Handle(http.MethodGet, "/saml2/metadata", tonic.Handler(test.Middleware.ServeMetadata, http.StatusFound))
+	r.Handle(http.MethodGet, "/saml2/acs", tonic.Handler(test.Middleware.ServeACS, http.StatusFound))
+	r.GET("/frob", requireAccount, requireAttribute, func(ctx *gin.Context) {
+		ctx.Writer.WriteHeader(http.StatusTeapot)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/frob", nil)
 	req.Header.Set("Cookie", ""+
 		"ttt="+test.expectedSessionCookie+"; "+
 		"Path=/; Max-Age=7200")
-	resp := httptest.NewRecorder()
-	handler.ServeHTTP(resp, req)
 
-	assert.Check(t, is.Equal(http.StatusForbidden, resp.Code))
+	testMiddlewareRequest(
+		r,
+		req,
+		func(resp *httptest.ResponseRecorder) {
+			assert.Check(t, is.Equal(http.StatusForbidden, resp.Code))
+		},
+	)
+
 }
 
 func TestMiddlewareRequireAttributeNotPresent(t *testing.T) {
 	test := NewMiddlewareTest(t)
-	handler := test.Middleware.RequireAccount(
-		RequireAttribute("valueThatDoesntExist", "doesntMatter")(
-			http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-				panic("not reached")
-			})))
 
-	req, _ := http.NewRequest("GET", "/frob", nil)
+	requireAccount := test.Middleware.RequireAccount()
+	requireAttribute := RequireAttribute("valueThatDoesntExist", "doesntMatter")
+
+	r := getRouter(false)
+	r.Handle(http.MethodGet, "/saml2/metadata", tonic.Handler(test.Middleware.ServeMetadata, http.StatusFound))
+	r.Handle(http.MethodGet, "/saml2/acs", tonic.Handler(test.Middleware.ServeACS, http.StatusFound))
+	r.GET("/frob", requireAccount, requireAttribute, func(ctx *gin.Context) {
+		ctx.Writer.WriteHeader(http.StatusTeapot)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/frob", nil)
 	req.Header.Set("Cookie", ""+
 		"ttt="+test.expectedSessionCookie+"; "+
 		"Path=/; Max-Age=7200")
-	resp := httptest.NewRecorder()
-	handler.ServeHTTP(resp, req)
 
-	assert.Check(t, is.Equal(http.StatusForbidden, resp.Code))
+	testMiddlewareRequest(
+		r,
+		req,
+		func(resp *httptest.ResponseRecorder) {
+			assert.Check(t, is.Equal(http.StatusForbidden, resp.Code))
+		},
+	)
+
 }
 
 func TestMiddlewareRequireAttributeMissingAccount(t *testing.T) {
 	test := NewMiddlewareTest(t)
-	handler := RequireAttribute("eduPersonAffiliation", "DomainAdmins")(
-		http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-			panic("not reached")
-		}))
 
-	req, _ := http.NewRequest("GET", "/frob", nil)
+	requireAccount := test.Middleware.RequireAccount()
+	requireAttribute := RequireAttribute("eduPersonAffiliation", "DomainAdmins")
+
+	r := getRouter(false)
+	r.Handle(http.MethodGet, "/saml2/metadata", tonic.Handler(test.Middleware.ServeMetadata, http.StatusFound))
+	r.Handle(http.MethodGet, "/saml2/acs", tonic.Handler(test.Middleware.ServeACS, http.StatusFound))
+	r.GET("/frob", requireAccount, requireAttribute, func(ctx *gin.Context) {
+		ctx.Writer.WriteHeader(http.StatusTeapot)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/frob", nil)
 	req.Header.Set("Cookie", ""+
 		"ttt="+test.expectedSessionCookie+"; "+
 		"Path=/; Max-Age=7200")
-	resp := httptest.NewRecorder()
-	handler.ServeHTTP(resp, req)
 
-	assert.Check(t, is.Equal(http.StatusForbidden, resp.Code))
+	testMiddlewareRequest(
+		r,
+		req,
+		func(resp *httptest.ResponseRecorder) {
+			assert.Check(t, is.Equal(http.StatusForbidden, resp.Code))
+		},
+	)
 }
 
 func TestMiddlewareCanParseResponse(t *testing.T) {
@@ -396,16 +517,21 @@ func TestMiddlewareCanParseResponse(t *testing.T) {
 	v := &url.Values{}
 	v.Set("SAMLResponse", base64.StdEncoding.EncodeToString(test.SamlResponse))
 	v.Set("RelayState", "KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6")
-	req, _ := http.NewRequest("POST", "/saml2/acs", bytes.NewReader([]byte(v.Encode())))
+
+	req := httptest.NewRequest(http.MethodPost, "/saml2/acs", bytes.NewReader([]byte(v.Encode())))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Cookie", ""+
 		"saml_KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6="+test.makeTrackedRequest("id-9e61753d64e928af5a7a341a97f420c9"))
 
 	resp := httptest.NewRecorder()
-	test.Middleware.ServeHTTP(resp, req)
-	assert.Check(t, is.Equal(http.StatusFound, resp.Code))
+	ctx, _ := gin.CreateTestContext(resp)
+	ctx.Request = req
 
-	assert.Check(t, is.Equal("/frob", resp.Header().Get("Location")))
+	redirectUri, err := test.Middleware.ServeACS(ctx)
+
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal("/frob", redirectUri))
 	assert.Check(t, is.DeepEqual([]string{
 		"saml_KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6=; Path=/saml2/acs; Domain=15661444.ngrok.io; Expires=Thu, 01 Jan 1970 00:00:01 GMT",
 		"ttt=" + test.expectedSessionCookie + "; " +
@@ -423,9 +549,10 @@ func TestMiddlewareDefaultCookieDomainIPv4(t *testing.T) {
 		Key: test.Key,
 	})
 
-	req, _ := http.NewRequest("GET", "/", nil)
 	resp := httptest.NewRecorder()
-	assert.Check(t, sp.CreateSession(resp, req, &saml.Assertion{}))
+	ctx, _ := gin.CreateTestContext(resp)
+
+	assert.Check(t, sp.CreateSession(ctx, &saml.Assertion{}))
 
 	assert.Check(t,
 		strings.Contains(resp.Header().Get("Set-Cookie"), "Domain=127.0.0.1;"),
@@ -442,9 +569,9 @@ func TestMiddlewareDefaultCookieDomainIPv6(t *testing.T) {
 		Key: test.Key,
 	})
 
-	req, _ := http.NewRequest("GET", "/", nil)
 	resp := httptest.NewRecorder()
-	assert.Check(t, sp.CreateSession(resp, req, &saml.Assertion{}))
+	ctx, _ := gin.CreateTestContext(resp)
+	assert.Check(t, sp.CreateSession(ctx, &saml.Assertion{}))
 
 	assert.Check(t,
 		strings.Contains(resp.Header().Get("Set-Cookie"), "Domain=::1;"),
@@ -454,69 +581,78 @@ func TestMiddlewareDefaultCookieDomainIPv6(t *testing.T) {
 func TestMiddlewareRejectsInvalidRelayState(t *testing.T) {
 	test := NewMiddlewareTest(t)
 
-	test.Middleware.OnError = func(w http.ResponseWriter, _ *http.Request, err error) {
+	test.Middleware.OnError = func(ctx *gin.Context, err error) error {
 		assert.Check(t, is.Error(err, http.ErrNoCookie.Error()))
-		http.Error(w, "forbidden", http.StatusTeapot)
+		return err
 	}
 
 	v := &url.Values{}
 	v.Set("SAMLResponse", base64.StdEncoding.EncodeToString(test.SamlResponse))
 	v.Set("RelayState", "ICIkJigqLC4wMjQ2ODo8PkBCREZISkxOUFJUVlhaXF5gYmRmaGpsbnBy")
-	req, _ := http.NewRequest("POST", "/saml2/acs", bytes.NewReader([]byte(v.Encode())))
+	req := httptest.NewRequest(http.MethodPost, "/saml2/acs", bytes.NewReader([]byte(v.Encode())))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Cookie", ""+
 		"saml_KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6="+test.makeTrackedRequest("id-9e61753d64e928af5a7a341a97f420c9"))
 
 	resp := httptest.NewRecorder()
-	test.Middleware.ServeHTTP(resp, req)
-	assert.Check(t, is.Equal(http.StatusTeapot, resp.Code))
-	assert.Check(t, is.Equal("", resp.Header().Get("Location")))
+	ctx, _ := gin.CreateTestContext(resp)
+	ctx.Request = req
+
+	redirectUri, err := test.Middleware.ServeACS(ctx)
+
+	assert.Check(t, is.Error(err, err.Error()))
+	assert.Check(t, is.Equal("", redirectUri))
 	assert.Check(t, is.Equal("", resp.Header().Get("Set-Cookie")))
 }
 
 func TestMiddlewareRejectsInvalidCookie(t *testing.T) {
 	test := NewMiddlewareTest(t)
 
-	test.Middleware.OnError = func(w http.ResponseWriter, _ *http.Request, err error) {
+	test.Middleware.OnError = func(ctx *gin.Context, err error) error {
 		assert.Check(t, is.Error(err, "Authentication failed"))
-		http.Error(w, "forbidden", http.StatusTeapot)
+		return err
 	}
 
 	v := &url.Values{}
 	v.Set("SAMLResponse", base64.StdEncoding.EncodeToString(test.SamlResponse))
 	v.Set("RelayState", "KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6")
-	req, _ := http.NewRequest("POST", "/saml2/acs", bytes.NewReader([]byte(v.Encode())))
+	req := httptest.NewRequest(http.MethodPost, "/saml2/acs", bytes.NewReader([]byte(v.Encode())))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Cookie", ""+
 		"saml_KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6="+test.makeTrackedRequest("wrong"))
 
 	resp := httptest.NewRecorder()
-	test.Middleware.ServeHTTP(resp, req)
-	assert.Check(t, is.Equal(http.StatusTeapot, resp.Code))
-	assert.Check(t, is.Equal("", resp.Header().Get("Location")))
+	ctx, _ := gin.CreateTestContext(resp)
+	ctx.Request = req
+
+	redirectUri, err := test.Middleware.ServeACS(ctx)
+	assert.Check(t, is.Error(err, err.Error()))
+	assert.Check(t, is.Equal("", redirectUri))
 	assert.Check(t, is.Equal("", resp.Header().Get("Set-Cookie")))
 }
 
 func TestMiddlewareHandlesInvalidResponse(t *testing.T) {
 	test := NewMiddlewareTest(t)
+
 	v := &url.Values{}
 	v.Set("SAMLResponse", "this is not a valid saml response")
 	v.Set("RelayState", "KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6")
 
-	req, _ := http.NewRequest("POST", "/saml2/acs", bytes.NewReader([]byte(v.Encode())))
+	req := httptest.NewRequest(http.MethodPost, "/saml2/acs", bytes.NewReader([]byte(v.Encode())))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Cookie", ""+
 		"saml_KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6="+test.makeTrackedRequest("wrong"))
 
 	resp := httptest.NewRecorder()
-	test.Middleware.ServeHTTP(resp, req)
+	ctx, _ := gin.CreateTestContext(resp)
+	ctx.Request = req
 
+	redirectUri, err := test.Middleware.ServeACS(ctx)
 	// note: it is important that when presented with an invalid request,
 	// the ACS handles DOES NOT reveal detailed error information in the
 	// HTTP response.
-	assert.Check(t, is.Equal(http.StatusForbidden, resp.Code))
-	respBody, _ := io.ReadAll(resp.Body)
-	assert.Check(t, is.Equal("Forbidden\n", string(respBody)))
-	assert.Check(t, is.Equal("", resp.Header().Get("Location")))
+	assert.Check(t, is.Error(err, err.Error()))
+	assert.Check(t, is.Equal("Forbidden: Authentication failed", err.Error()))
+	assert.Check(t, is.Equal("", redirectUri))
 	assert.Check(t, is.Equal("", resp.Header().Get("Set-Cookie")))
 }

@@ -3,9 +3,9 @@ package samlsp
 import (
 	"context"
 	"errors"
-	"net/http"
 
 	"github.com/crewjam/saml"
+	"github.com/gin-gonic/gin"
 )
 
 // Session is an interface implemented to contain a session.
@@ -27,15 +27,15 @@ type SessionProvider interface {
 	// CreateSession is called when we have received a valid SAML assertion and
 	// should create a new session and modify the http response accordingly, e.g. by
 	// setting a cookie.
-	CreateSession(w http.ResponseWriter, r *http.Request, assertion *saml.Assertion) error
+	CreateSession(ctx *gin.Context, assertion *saml.Assertion) error
 
 	// DeleteSession is called to modify the response such that it removed the current
 	// session, e.g. by deleting a cookie.
-	DeleteSession(w http.ResponseWriter, r *http.Request) error
+	DeleteSession(ctx *gin.Context) error
 
 	// GetSession returns the current Session associated with the request, or
 	// ErrNoSession if there is no valid session.
-	GetSession(r *http.Request) (Session, error)
+	GetSession(ctx *gin.Context) (Session, error)
 }
 
 // SessionCodec is an interface to convert SAML assertions to a
@@ -61,8 +61,8 @@ const sessionIndex indexType = iota
 
 // SessionFromContext returns the session associated with ctx, or nil
 // if no session are associated
-func SessionFromContext(ctx context.Context) Session {
-	v := ctx.Value(sessionIndex)
+func SessionFromContext(ctx *gin.Context) Session {
+	v := ctx.Request.Context().Value(sessionIndex)
 	if v == nil {
 		return nil
 	}
@@ -70,13 +70,13 @@ func SessionFromContext(ctx context.Context) Session {
 }
 
 // ContextWithSession returns a new context with session associated
-func ContextWithSession(ctx context.Context, session Session) context.Context {
-	return context.WithValue(ctx, sessionIndex, session)
+func ContextWithSession(ctx *gin.Context, session Session) context.Context {
+	return context.WithValue(ctx.Request.Context(), sessionIndex, session)
 }
 
 // AttributeFromContext is a convenience method that returns the named attribute
 // from the session, if available.
-func AttributeFromContext(ctx context.Context, name string) string {
+func AttributeFromContext(ctx *gin.Context, name string) string {
 	s := SessionFromContext(ctx)
 	if s == nil {
 		return ""

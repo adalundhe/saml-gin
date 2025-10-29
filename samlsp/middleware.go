@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/crewjam/saml"
+	"github.com/gin-gonic/gin"
 )
 
 // Middleware implements middleware than allows a web application
@@ -39,49 +40,32 @@ import (
 // When issuing JSON Web Tokens, a signing key is required. Because the
 // SAML service provider already has a private key, we borrow that key
 // to sign the JWTs as well.
+
 type Middleware struct {
 	ServiceProvider  saml.ServiceProvider
-	OnError          func(w http.ResponseWriter, r *http.Request, err error)
+	OnError          func(c *gin.Context, err error) error
 	Binding          string // either saml.HTTPPostBinding or saml.HTTPRedirectBinding
 	ResponseBinding  string // either saml.HTTPPostBinding or saml.HTTPArtifactBinding
 	RequestTracker   RequestTracker
 	Session          SessionProvider
 	AssertionHandler AssertionHandler
-}
-
-// ServeHTTP implements http.Handler and serves the SAML-specific HTTP endpoints
-// on the URIs specified by m.ServiceProvider.MetadataURL and
-// m.ServiceProvider.AcsURL.
-func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == m.ServiceProvider.MetadataURL.Path {
-		m.ServeMetadata(w, r)
-		return
-	}
-
-	if r.URL.Path == m.ServiceProvider.AcsURL.Path {
-		m.ServeACS(w, r)
-		return
-	}
-
-	http.NotFoundHandler().ServeHTTP(w, r)
+	ForceRedirect    string
+	ACSHandler       gin.HandlerFunc
+	MetadataHandler  gin.HandlerFunc
 }
 
 // ServeMetadata handles requests for the SAML metadata endpoint.
-func (m *Middleware) ServeMetadata(w http.ResponseWriter, _ *http.Request) {
+func (m *Middleware) ServeMetadata(c *gin.Context) ([]byte, error) {
 	buf, _ := xml.MarshalIndent(m.ServiceProvider.Metadata(), "", "  ")
-	w.Header().Set("Content-Type", "application/samlmetadata+xml")
-	if _, err := w.Write(buf); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	c.Header("Content-Type", "application/samlmetadata+xml")
+	return buf, nil
 }
 
 // ServeACS handles requests for the SAML ACS endpoint.
-func (m *Middleware) ServeACS(w http.ResponseWriter, r *http.Request) {
-	err := r.ParseForm()
-	if err != nil {
-		m.OnError(w, r, err)
-		return
+func (m *Middleware) ServeACS(c *gin.Context) (string, error) {
+
+	if err := c.Request.ParseForm(); err != nil {
+		return "", m.OnError(c, err)
 	}
 
 	possibleRequestIDs := []string{}
@@ -89,53 +73,57 @@ func (m *Middleware) ServeACS(w http.ResponseWriter, r *http.Request) {
 		possibleRequestIDs = append(possibleRequestIDs, "")
 	}
 
-	trackedRequests := m.RequestTracker.GetTrackedRequests(r)
+	trackedRequests := m.RequestTracker.GetTrackedRequests(c.Request)
 	for _, tr := range trackedRequests {
 		possibleRequestIDs = append(possibleRequestIDs, tr.SAMLRequestID)
 	}
 
-	assertion, err := m.ServiceProvider.ParseResponse(r, possibleRequestIDs)
+	assertion, err := m.ServiceProvider.ParseResponse(c.Request, possibleRequestIDs)
 	if err != nil {
-		m.OnError(w, r, err)
-		return
+		return "", m.OnError(c, err)
 	}
 
 	if handlerErr := m.AssertionHandler.HandleAssertion(assertion); handlerErr != nil {
-		m.OnError(w, r, handlerErr)
-		return
+
+		return "", m.OnError(c, handlerErr)
 	}
 
-	m.CreateSessionFromAssertion(w, r, assertion, m.ServiceProvider.DefaultRedirectURI)
+	return m.CreateSessionFromAssertion(c, assertion, m.ServiceProvider.DefaultRedirectURI)
+
 }
 
 // RequireAccount is HTTP middleware that requires that each request be
 // associated with a valid session. If the request is not associated with a valid
 // session, then rather than serve the request, the middleware redirects the user
 // to start the SAML auth flow.
-func (m *Middleware) RequireAccount(handler http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		session, err := m.Session.GetSession(r)
+func (m *Middleware) RequireAccount() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		session, err := m.Session.GetSession(c)
 		if session != nil {
-			r = r.WithContext(ContextWithSession(r.Context(), session))
-			handler.ServeHTTP(w, r)
+			c.Request = c.Request.WithContext(ContextWithSession(c, session))
+			// handler.ServeHTTP(w, r)
+			c.Next()
 			return
 		}
 		if err == ErrNoSession {
-			m.HandleStartAuthFlow(w, r)
+			m.HandleStartAuthFlow(c)
 			return
 		}
 
-		m.OnError(w, r, err)
-	})
+		err = m.OnError(c, err)
+		c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
 }
 
 // HandleStartAuthFlow is called to start the SAML authentication process.
-func (m *Middleware) HandleStartAuthFlow(w http.ResponseWriter, r *http.Request) {
+func (m *Middleware) HandleStartAuthFlow(c *gin.Context) {
 	// If we try to redirect when the original request is the ACS URL we'll
 	// end up in a loop. This is a programming error, so we panic here. In
 	// general this means a 500 to the user, which is preferable to a
 	// redirect loop.
-	if r.URL.Path == m.ServiceProvider.AcsURL.Path {
+	if c.Request.URL.Path == m.ServiceProvider.AcsURL.Path {
 		panic("don't wrap Middleware with RequireAccount")
 	}
 
@@ -154,7 +142,10 @@ func (m *Middleware) HandleStartAuthFlow(w http.ResponseWriter, r *http.Request)
 
 	authReq, err := m.ServiceProvider.MakeAuthenticationRequest(bindingLocation, binding, m.ResponseBinding)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		err = m.OnError(c, err)
+		c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
 		return
 	}
 
@@ -162,34 +153,44 @@ func (m *Middleware) HandleStartAuthFlow(w http.ResponseWriter, r *http.Request)
 	// this means that we cannot use a JWT because it is way to long. Instead
 	// we set a signed cookie that encodes the original URL which we'll check
 	// against the SAML response when we get it.
-	relayState, err := m.RequestTracker.TrackRequest(w, r, authReq.ID)
+	relayState, err := m.RequestTracker.TrackRequest(c.Writer, c.Request, authReq.ID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		err = m.OnError(c, err)
+		c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+
 		return
 	}
 
 	if binding == saml.HTTPRedirectBinding {
 		redirectURL, err := authReq.Redirect(relayState, &m.ServiceProvider)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			err = m.OnError(c, err)
+			c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": err.Error(),
+			})
 			return
 		}
-		w.Header().Add("Location", redirectURL.String())
-		w.WriteHeader(http.StatusFound)
+		c.Header("Location", redirectURL.String())
+		c.Redirect(http.StatusFound, redirectURL.String())
 		return
 	}
 	if binding == saml.HTTPPostBinding {
-		w.Header().Add("Content-Security-Policy", ""+
+		c.Header("Content-Security-Policy", ""+
 			"default-src; "+
 			"script-src 'sha256-AjPdJSbZmeWHnEc5ykvJFay8FTWeTeRbs9dutfZ0HqE='; "+
 			"reflected-xss block; referrer no-referrer;")
-		w.Header().Add("Content-type", "text/html")
+		c.Header("Content-type", "text/html")
 		var buf bytes.Buffer
 		buf.WriteString(`<!DOCTYPE html><html><body>`)
 		buf.Write(authReq.Post(relayState))
 		buf.WriteString(`</body></html>`)
-		if _, err := w.Write(buf.Bytes()); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		if _, err := c.Writer.Write(buf.Bytes()); err != nil {
+			err = m.OnError(c, err)
+			c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": err.Error(),
+			})
 			return
 		}
 		return
@@ -198,57 +199,56 @@ func (m *Middleware) HandleStartAuthFlow(w http.ResponseWriter, r *http.Request)
 }
 
 // CreateSessionFromAssertion is invoked by ServeHTTP when we have a new, valid SAML assertion.
-func (m *Middleware) CreateSessionFromAssertion(w http.ResponseWriter, r *http.Request, assertion *saml.Assertion, redirectURI string) {
-	if trackedRequestIndex := r.Form.Get("RelayState"); trackedRequestIndex != "" {
-		trackedRequest, err := m.RequestTracker.GetTrackedRequest(r, trackedRequestIndex)
+func (m *Middleware) CreateSessionFromAssertion(c *gin.Context, assertion *saml.Assertion, redirectURI string) (string, error) {
+	if trackedRequestIndex := c.Request.Form.Get("RelayState"); trackedRequestIndex != "" {
+		trackedRequest, err := m.RequestTracker.GetTrackedRequest(c.Request, trackedRequestIndex)
 		if err != nil {
 			if err == http.ErrNoCookie && m.ServiceProvider.AllowIDPInitiated {
-				if uri := r.Form.Get("RelayState"); uri != "" {
+				if uri := c.Request.Form.Get("RelayState"); uri != "" {
 					redirectURI = uri
 				}
 			} else {
-				m.OnError(w, r, err)
-				return
+				return "", m.OnError(c, err)
 			}
 		} else {
-			if err := m.RequestTracker.StopTrackingRequest(w, r, trackedRequestIndex); err != nil {
-				m.OnError(w, r, err)
-				return
+			if err := m.RequestTracker.StopTrackingRequest(c.Writer, c.Request, trackedRequestIndex); err != nil {
+				return "", m.OnError(c, err)
 			}
 
 			redirectURI = trackedRequest.URI
 		}
 	}
 
-	if err := m.Session.CreateSession(w, r, assertion); err != nil {
-		m.OnError(w, r, err)
-		return
+	if err := m.Session.CreateSession(c, assertion); err != nil {
+		return "", m.OnError(c, err)
 	}
 
-	http.Redirect(w, r, redirectURI, http.StatusFound)
+	return redirectURI, nil
 }
 
 // RequireAttribute returns a middleware function that requires that the
 // SAML attribute `name` be set to `value`. This can be used to require
 // that a remote user be a member of a group. It relies on the Claims assigned
 // to to the context in RequireAccount.
-func RequireAttribute(name, value string) func(http.Handler) http.Handler {
-	return func(handler http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if session := SessionFromContext(r.Context()); session != nil {
-				// this will panic if we have the wrong type of Session, and that is OK.
-				sessionWithAttributes := session.(SessionWithAttributes)
-				attributes := sessionWithAttributes.GetAttributes()
-				if values, ok := attributes[name]; ok {
-					for _, v := range values {
-						if v == value {
-							handler.ServeHTTP(w, r)
-							return
-						}
+func RequireAttribute(name, value string) gin.HandlerFunc {
+
+	return func(ctx *gin.Context) {
+		if session := SessionFromContext(ctx); session != nil {
+			// this will panic if we have the wrong type of Session, and that is OK.
+			sessionWithAttributes := session.(SessionWithAttributes)
+			attributes := sessionWithAttributes.GetAttributes()
+			if values, ok := attributes[name]; ok {
+				for _, v := range values {
+					if v == value {
+						ctx.Next()
+						return
 					}
 				}
 			}
-			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+		}
+
+		ctx.JSON(http.StatusForbidden, map[string]string{
+			"error": http.StatusText(http.StatusForbidden),
 		})
 	}
 }

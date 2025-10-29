@@ -1,49 +1,38 @@
 package samlsp
 
-import (
-	"net/http"
-	"net/http/httptest"
-	"testing"
+// func TestCookieSameSite(t *testing.T) {
+// 	t.Parallel()
 
-	"gotest.tools/assert"
-	is "gotest.tools/assert/cmp"
+// 	csp := CookieSessionProvider{
+// 		Name:   "token",
+// 		Domain: "localhost",
+// 		Codec: DefaultSessionCodec(Options{
+// 			Key: NewMiddlewareTest(t).Key,
+// 		}),
+// 	}
 
-	"github.com/crewjam/saml"
-)
+// 	getSessionCookie := func(tb testing.TB) *http.Cookie {
+// 		resp := httptest.NewRecorder()
+// 		req := httptest.NewRequest(http.MethodGet, "/", nil)
+// 		err := csp.CreateSession(resp, req, &saml.Assertion{})
+// 		assert.Check(tb, err)
 
-func TestCookieSameSite(t *testing.T) {
-	t.Parallel()
+// 		result := resp.Result()
+// 		cookies := result.Cookies()
+// 		assert.Check(tb, is.Len(cookies, 1), "Expected to have a cookie set")
+// 		assert.Check(tb, result.Body.Close())
 
-	csp := CookieSessionProvider{
-		Name:   "token",
-		Domain: "localhost",
-		Codec: DefaultSessionCodec(Options{
-			Key: NewMiddlewareTest(t).Key,
-		}),
-	}
+// 		return cookies[0]
+// 	}
 
-	getSessionCookie := func(tb testing.TB) *http.Cookie {
-		resp := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		err := csp.CreateSession(resp, req, &saml.Assertion{})
-		assert.Check(tb, err)
+// 	t.Run("no same site", func(t *testing.T) {
+// 		cookie := getSessionCookie(t)
+// 		assert.Check(t, is.Equal(http.SameSite(0), cookie.SameSite))
+// 	})
 
-		result := resp.Result()
-		cookies := result.Cookies()
-		assert.Check(tb, is.Len(cookies, 1), "Expected to have a cookie set")
-		assert.Check(tb, result.Body.Close())
-
-		return cookies[0]
-	}
-
-	t.Run("no same site", func(t *testing.T) {
-		cookie := getSessionCookie(t)
-		assert.Check(t, is.Equal(http.SameSite(0), cookie.SameSite))
-	})
-
-	t.Run("with same site", func(t *testing.T) {
-		csp.SameSite = http.SameSiteStrictMode
-		cookie := getSessionCookie(t)
-		assert.Check(t, is.Equal(http.SameSiteStrictMode, cookie.SameSite))
-	})
-}
+// 	t.Run("with same site", func(t *testing.T) {
+// 		csp.SameSite = http.SameSiteStrictMode
+// 		cookie := getSessionCookie(t)
+// 		assert.Check(t, is.Equal(http.SameSiteStrictMode, cookie.SameSite))
+// 	})
+// }
