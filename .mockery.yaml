@@ -1,0 +1,16 @@
+quiet: False
+keeptree: False
+disable-version-string: True
+with-expecter: True
+#outpkg: mocks
+#dir: mocks
+# replace is needed or golang compiler will complain about `internal` package
+dir: mocks/{{ replaceAll .PackagePath "/internal/" "/_internal/" }}
+all: true
+# https://vektra.github.io/mockery/v2.53/deprecations/#issue-845-fix
+issue-845-fix: True
+resolve-type-alias: False
+packages:
+  github.com/adalundhe/saml-gin:
+    config:
+      recursive: true
