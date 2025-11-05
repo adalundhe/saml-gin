@@ -174,14 +174,14 @@ func DefaultAssertionHandler(_ Options) NopAssertionHandler {
 // You can customize the behavior of the middleware in more detail by
 // replacing and/or changing Session, RequestTracker, and ServiceProvider
 // in the returned Middleware.
-func New(opts Options) (*Middleware, error) {
+func New(opts Options) (Middleware, error) {
 
 	forceRedirectUrl := ""
 	if opts.ForceRedirectUrl != nil {
 		forceRedirectUrl = opts.ForceRedirectUrl.String()
 	}
 
-	m := &Middleware{
+	m := &MiddlewareImpl{
 		ServiceProvider:  DefaultServiceProvider(opts),
 		Binding:          "",
 		ResponseBinding:  saml.HTTPPostBinding,

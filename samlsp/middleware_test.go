@@ -33,7 +33,7 @@ type MiddlewareTest struct {
 	Key                   *rsa.PrivateKey
 	Certificate           *x509.Certificate
 	IDPMetadata           []byte
-	Middleware            *Middleware
+	Middleware            Middleware
 	expectedSessionCookie string
 }
 
@@ -118,11 +118,15 @@ func NewMiddlewareTest(t *testing.T) *MiddlewareTest {
 	sessionCodec.MaxAge = 7200 * time.Second
 	sessionProvider.Codec = sessionCodec
 
-	test.Middleware.Session = sessionProvider
+	test.Middleware.SetSession(sessionProvider)
 
-	test.Middleware.ServiceProvider.MetadataURL.Path = "/saml2/metadata"
-	test.Middleware.ServiceProvider.AcsURL.Path = "/saml2/acs"
-	test.Middleware.ServiceProvider.SloURL.Path = "/saml2/slo"
+	serviceProvider := test.Middleware.GetServiceProvider()
+
+	serviceProvider.MetadataURL.Path = "/saml2/metadata"
+	serviceProvider.AcsURL.Path = "/saml2/acs"
+	serviceProvider.SloURL.Path = "/saml2/slo"
+
+	test.Middleware.SetServiceProvider(serviceProvider)
 
 	var tc JWTSessionClaims
 	if err := json.Unmarshal(golden.Get(t, "token.json"), &tc); err != nil {
@@ -137,7 +141,7 @@ func NewMiddlewareTest(t *testing.T) *MiddlewareTest {
 }
 
 func (test *MiddlewareTest) makeTrackedRequest(id string) string {
-	codec := test.Middleware.RequestTracker.(CookieRequestTracker).Codec
+	codec := test.Middleware.GetRequestTracker().(CookieRequestTracker).Codec
 	token, err := codec.Encode(TrackedRequest{
 		Index:         "KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6",
 		SAMLRequestID: id,
@@ -169,7 +173,9 @@ func TestMiddlewareCanProduceMetadata(t *testing.T) {
 func TestMiddlewareRequireAccountNoCreds(t *testing.T) {
 
 	test := NewMiddlewareTest(t)
-	test.Middleware.ServiceProvider.AcsURL.Scheme = "http"
+	serviceProvider := test.Middleware.GetServiceProvider()
+	serviceProvider.AcsURL.Scheme = "http"
+	test.Middleware.SetServiceProvider(serviceProvider)
 
 	handler := test.Middleware.RequireAccount()
 
@@ -236,9 +242,10 @@ func TestMiddlewareRequireAccountNoCredsSecure(t *testing.T) {
 
 func TestMiddlewareRequireAccountNoCredsPostBinding(t *testing.T) {
 	test := NewMiddlewareTest(t)
-	test.Middleware.ServiceProvider.IDPMetadata.IDPSSODescriptors[0].SingleSignOnServices = test.Middleware.ServiceProvider.IDPMetadata.IDPSSODescriptors[0].SingleSignOnServices[1:2]
+	test.Middleware.GetServiceProvider().IDPMetadata.IDPSSODescriptors[0].SingleSignOnServices = test.Middleware.GetServiceProvider().IDPMetadata.IDPSSODescriptors[0].SingleSignOnServices[1:2]
+	serviceProvider := test.Middleware.GetServiceProvider()
 	assert.Check(t, is.Equal("",
-		test.Middleware.ServiceProvider.GetSSOBindingLocation(saml.HTTPRedirectBinding)))
+		serviceProvider.GetSSOBindingLocation(saml.HTTPRedirectBinding)))
 
 	handler := test.Middleware.RequireAccount()
 
@@ -581,10 +588,10 @@ func TestMiddlewareDefaultCookieDomainIPv6(t *testing.T) {
 func TestMiddlewareRejectsInvalidRelayState(t *testing.T) {
 	test := NewMiddlewareTest(t)
 
-	test.Middleware.OnError = func(ctx *gin.Context, err error) error {
+	test.Middleware.SetOnError(func(ctx *gin.Context, err error) error {
 		assert.Check(t, is.Error(err, http.ErrNoCookie.Error()))
 		return err
-	}
+	})
 
 	v := &url.Values{}
 	v.Set("SAMLResponse", base64.StdEncoding.EncodeToString(test.SamlResponse))
@@ -608,10 +615,10 @@ func TestMiddlewareRejectsInvalidRelayState(t *testing.T) {
 func TestMiddlewareRejectsInvalidCookie(t *testing.T) {
 	test := NewMiddlewareTest(t)
 
-	test.Middleware.OnError = func(ctx *gin.Context, err error) error {
+	test.Middleware.SetOnError(func(ctx *gin.Context, err error) error {
 		assert.Check(t, is.Error(err, "Authentication failed"))
 		return err
-	}
+	})
 
 	v := &url.Values{}
 	v.Set("SAMLResponse", base64.StdEncoding.EncodeToString(test.SamlResponse))

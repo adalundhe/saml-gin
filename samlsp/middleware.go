@@ -42,7 +42,22 @@ import (
 // SAML service provider already has a private key, we borrow that key
 // to sign the JWTs as well.
 
-type Middleware struct {
+type Middleware interface {
+	ServeMetadata(c *gin.Context) ([]byte, error)
+	ServeACS(c *gin.Context) (string, error)
+	RequireAccount() gin.HandlerFunc
+	HandleStartAuthFlow(c *gin.Context)
+	CreateSessionFromAssertion(c *gin.Context, assertion *saml.Assertion, redirectURI string) (string, error)
+	GetSession() SessionProvider
+	GetRequestTracker() RequestTracker
+	GetServiceProvider() saml.ServiceProvider
+	SetSession(session SessionProvider)
+	SetRequestTracker(tracker RequestTracker)
+	SetServiceProvider(sp saml.ServiceProvider)
+	SetOnError(onErr func(ctx *gin.Context, err error) error)
+}
+
+type MiddlewareImpl struct {
 	ServiceProvider  saml.ServiceProvider
 	OnError          func(c *gin.Context, err error) error
 	Binding          string // either saml.HTTPPostBinding or saml.HTTPRedirectBinding
@@ -55,15 +70,42 @@ type Middleware struct {
 	MetadataHandler  gin.HandlerFunc
 }
 
+func (m *MiddlewareImpl) GetSession() SessionProvider {
+	return m.Session
+}
+func (m *MiddlewareImpl) SetSession(session SessionProvider) {
+	m.Session = session
+}
+
+func (m *MiddlewareImpl) GetRequestTracker() RequestTracker {
+	return m.RequestTracker
+}
+
+func (m *MiddlewareImpl) SetRequestTracker(tracker RequestTracker) {
+	m.RequestTracker = tracker
+}
+
+func (m *MiddlewareImpl) GetServiceProvider() saml.ServiceProvider {
+	return m.ServiceProvider
+}
+
+func (m *MiddlewareImpl) SetServiceProvider(sp saml.ServiceProvider) {
+	m.ServiceProvider = sp
+}
+
+func (m *MiddlewareImpl) SetOnError(onErr func(ctx *gin.Context, err error) error) {
+	m.OnError = onErr
+}
+
 // ServeMetadata handles requests for the SAML metadata endpoint.
-func (m *Middleware) ServeMetadata(c *gin.Context) ([]byte, error) {
+func (m *MiddlewareImpl) ServeMetadata(c *gin.Context) ([]byte, error) {
 	buf, _ := xml.MarshalIndent(m.ServiceProvider.Metadata(), "", "  ")
 	c.Header("Content-Type", "application/samlmetadata+xml")
 	return buf, nil
 }
 
 // ServeACS handles requests for the SAML ACS endpoint.
-func (m *Middleware) ServeACS(c *gin.Context) (string, error) {
+func (m *MiddlewareImpl) ServeACS(c *gin.Context) (string, error) {
 
 	if err := c.Request.ParseForm(); err != nil {
 		return "", m.OnError(c, err)
@@ -97,7 +139,7 @@ func (m *Middleware) ServeACS(c *gin.Context) (string, error) {
 // associated with a valid session. If the request is not associated with a valid
 // session, then rather than serve the request, the middleware redirects the user
 // to start the SAML auth flow.
-func (m *Middleware) RequireAccount() gin.HandlerFunc {
+func (m *MiddlewareImpl) RequireAccount() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		session, err := m.Session.GetSession(c)
 		if session != nil {
@@ -119,7 +161,7 @@ func (m *Middleware) RequireAccount() gin.HandlerFunc {
 }
 
 // HandleStartAuthFlow is called to start the SAML authentication process.
-func (m *Middleware) HandleStartAuthFlow(c *gin.Context) {
+func (m *MiddlewareImpl) HandleStartAuthFlow(c *gin.Context) {
 	// If we try to redirect when the original request is the ACS URL we'll
 	// end up in a loop. This is a programming error, so we panic here. In
 	// general this means a 500 to the user, which is preferable to a
@@ -201,7 +243,7 @@ func (m *Middleware) HandleStartAuthFlow(c *gin.Context) {
 }
 
 // CreateSessionFromAssertion is invoked by ServeHTTP when we have a new, valid SAML assertion.
-func (m *Middleware) CreateSessionFromAssertion(c *gin.Context, assertion *saml.Assertion, redirectURI string) (string, error) {
+func (m *MiddlewareImpl) CreateSessionFromAssertion(c *gin.Context, assertion *saml.Assertion, redirectURI string) (string, error) {
 	if trackedRequestIndex := c.Request.Form.Get("RelayState"); trackedRequestIndex != "" {
 		trackedRequest, err := m.RequestTracker.GetTrackedRequest(c.Request, trackedRequestIndex)
 		if err != nil {
