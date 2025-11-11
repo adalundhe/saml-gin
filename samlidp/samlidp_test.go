@@ -85,13 +85,13 @@ func NewServerTest(t *testing.T) *ServerTest {
 
 	test.SPKey = mustParsePrivateKey(golden.Get(t, "sp_key.pem")).(*rsa.PrivateKey)
 	test.SPCertificate = mustParseCertificate(golden.Get(t, "sp_cert.pem"))
-	test.SP = saml.ServiceProvider{
+	test.SP = saml.NewServiceProvider(&saml.ServiceProviderOpts{
 		Key:         test.SPKey,
 		Certificate: test.SPCertificate,
 		MetadataURL: mustParseURL("https://sp.example.com/saml2/metadata"),
 		AcsURL:      mustParseURL("https://sp.example.com/saml2/acs"),
 		IDPMetadata: &saml.EntityDescriptor{},
-	}
+	})
 	test.Key = mustParsePrivateKey(golden.Get(t, "idp_key.pem")).(*rsa.PrivateKey)
 	test.Certificate = mustParseCertificate(golden.Get(t, "idp_cert.pem"))
 
@@ -109,7 +109,7 @@ func NewServerTest(t *testing.T) *ServerTest {
 		panic(err)
 	}
 
-	test.SP.IDPMetadata = test.Server.IDP.Metadata()
+	test.SP.SetIDPMetadata(test.Server.IDP.Metadata())
 	test.Server.serviceProviders["https://sp.example.com/saml2/metadata"] = test.SP.Metadata()
 	return &test
 }

@@ -112,7 +112,7 @@ func (m *MiddlewareImpl) ServeACS(c *gin.Context) (string, error) {
 	}
 
 	possibleRequestIDs := []string{}
-	if m.ServiceProvider.AllowIDPInitiated {
+	if m.ServiceProvider.IDPInitiatedAllowed() {
 		possibleRequestIDs = append(possibleRequestIDs, "")
 	}
 
@@ -131,7 +131,7 @@ func (m *MiddlewareImpl) ServeACS(c *gin.Context) (string, error) {
 		return "", m.OnError(c, handlerErr)
 	}
 
-	return m.CreateSessionFromAssertion(c, assertion, m.ServiceProvider.DefaultRedirectURI)
+	return m.CreateSessionFromAssertion(c, assertion, m.ServiceProvider.GetDefaultRedirectURI())
 
 }
 
@@ -166,7 +166,7 @@ func (m *MiddlewareImpl) HandleStartAuthFlow(c *gin.Context) {
 	// end up in a loop. This is a programming error, so we panic here. In
 	// general this means a 500 to the user, which is preferable to a
 	// redirect loop.
-	if c.Request.URL.Path == m.ServiceProvider.AcsURL.Path {
+	if c.Request.URL.Path == m.ServiceProvider.GetAcsUrl().Path {
 		panic("don't wrap Middleware with RequireAccount")
 	}
 
@@ -207,7 +207,7 @@ func (m *MiddlewareImpl) HandleStartAuthFlow(c *gin.Context) {
 	}
 
 	if binding == saml.HTTPRedirectBinding {
-		redirectURL, err := authReq.Redirect(relayState, &m.ServiceProvider)
+		redirectURL, err := authReq.Redirect(relayState, m.GetServiceProvider())
 		if err != nil {
 			err = m.OnError(c, err)
 			c.JSON(http.StatusInternalServerError, map[string]string{
@@ -247,7 +247,7 @@ func (m *MiddlewareImpl) CreateSessionFromAssertion(c *gin.Context, assertion *s
 	if trackedRequestIndex := c.Request.Form.Get("RelayState"); trackedRequestIndex != "" {
 		trackedRequest, err := m.RequestTracker.GetTrackedRequest(c.Request, trackedRequestIndex)
 		if err != nil {
-			if err == http.ErrNoCookie && m.ServiceProvider.AllowIDPInitiated {
+			if err == http.ErrNoCookie && m.ServiceProvider.IDPInitiatedAllowed() {
 				if uri := c.Request.Form.Get("RelayState"); uri != "" {
 					redirectURI = uri
 				}

@@ -168,6 +168,15 @@ type ServiceProvider interface {
 	GetAcsUrl() *url.URL
 	GetMetadataURL() url.URL
 	SetAcsUrl(url url.URL)
+	SetKey(key crypto.Signer)
+	SetMetadataUrl(metadataUrl url.URL)
+	GetSloUrl() url.URL
+	SetSloUrl(sloUrl url.URL)
+	IDPInitiatedAllowed() bool
+	GetDefaultRedirectURI() string
+	GetSignatureMethod() string
+	GetKey() crypto.Signer
+	GetCertificate() *x509.Certificate
 	Metadata() *EntityDescriptor
 	ValidateAssertion(assertion *Assertion, possibleRequestIDs []string, now time.Time) error
 	DecryptElement(encryptedEl *etree.Element) (*etree.Element, error)
@@ -353,6 +362,42 @@ func (sp *ServiceProviderImpl) SetAcsUrl(url url.URL) {
 	sp.AcsURL = url
 }
 
+func (sp *ServiceProviderImpl) SetMetadataUrl(metadataUrl url.URL) {
+	sp.MetadataURL = metadataUrl
+}
+
+func (sp *ServiceProviderImpl) GetSloUrl() url.URL {
+	return sp.SloURL
+}
+
+func (sp *ServiceProviderImpl) SetSloUrl(sloUrl url.URL) {
+	sp.SloURL = sloUrl
+}
+
+func (sp *ServiceProviderImpl) SetKey(key crypto.Signer) {
+	sp.Key = key
+}
+
+func (sp *ServiceProviderImpl) IDPInitiatedAllowed() bool {
+	return sp.AllowIDPInitiated
+}
+
+func (sp *ServiceProviderImpl) GetDefaultRedirectURI() string {
+	return sp.DefaultRedirectURI
+}
+
+func (sp *ServiceProviderImpl) GetSignatureMethod() string {
+	return sp.SignatureMethod
+}
+
+func (sp *ServiceProviderImpl) GetKey() crypto.Signer {
+	return sp.Key
+}
+
+func (sp *ServiceProviderImpl) GetCertificate() *x509.Certificate {
+	return sp.Certificate
+}
+
 // Metadata returns the service provider metadata
 func (sp *ServiceProviderImpl) Metadata() *EntityDescriptor {
 	validDuration := DefaultValidDuration
@@ -458,7 +503,7 @@ func (sp *ServiceProviderImpl) MakeRedirectAuthenticationRequest(relayState stri
 }
 
 // Redirect returns a URL suitable for using the redirect binding with the request
-func (r *AuthnRequest) Redirect(relayState string, sp *ServiceProviderImpl) (*url.URL, error) {
+func (r *AuthnRequest) Redirect(relayState string, sp ServiceProvider) (*url.URL, error) {
 	var requestStr strings.Builder
 	base64Writer := base64.NewEncoder(base64.StdEncoding, &requestStr)
 	compressedWriter, _ := flate.NewWriter(base64Writer, 9)
@@ -490,8 +535,8 @@ func (r *AuthnRequest) Redirect(relayState string, sp *ServiceProviderImpl) (*ur
 	if relayState != "" {
 		query += "&RelayState=" + relayState
 	}
-	if len(sp.SignatureMethod) > 0 {
-		query += "&SigAlg=" + url.QueryEscape(sp.SignatureMethod)
+	if len(sp.GetSignatureMethod()) > 0 {
+		query += "&SigAlg=" + url.QueryEscape(sp.GetSignatureMethod())
 		signingContext, err := GetSigningContext(sp)
 
 		if err != nil {
@@ -736,35 +781,35 @@ func (sp *ServiceProviderImpl) MakeAuthenticationRequest(idpURL string, binding 
 }
 
 // GetSigningContext returns a dsig.SigningContext initialized based on the Service Provider's configuration
-func GetSigningContext(sp *ServiceProviderImpl) (*dsig.SigningContext, error) {
+func GetSigningContext(sp ServiceProvider) (*dsig.SigningContext, error) {
 	keyPair := tls.Certificate{
-		Certificate: [][]byte{sp.Certificate.Raw},
-		PrivateKey:  sp.Key,
-		Leaf:        sp.Certificate,
+		Certificate: [][]byte{sp.GetCertificate().Raw},
+		PrivateKey:  sp.GetKey(),
+		Leaf:        sp.GetCertificate(),
 	}
 	// TODO: add intermediates for SP
 	// for _, cert := range sp.Intermediates {
 	// 	keyPair.Certificate = append(keyPair.Certificate, cert.Raw)
 	// }
 
-	switch sp.SignatureMethod {
+	switch sp.GetSignatureMethod() {
 	case dsig.RSASHA1SignatureMethod,
 		dsig.RSASHA256SignatureMethod,
 		dsig.RSASHA384SignatureMethod,
 		dsig.RSASHA512SignatureMethod:
-		if _, ok := sp.Key.(*rsa.PrivateKey); !ok {
-			return nil, fmt.Errorf("signature method %s requires a key of type rsa.PrivateKey, not %T", sp.SignatureMethod, sp.Key)
+		if _, ok := sp.GetKey().(*rsa.PrivateKey); !ok {
+			return nil, fmt.Errorf("signature method %s requires a key of type rsa.PrivateKey, not %T", sp.GetSignatureMethod(), sp.GetKey())
 		}
 
 	case dsig.ECDSASHA1SignatureMethod,
 		dsig.ECDSASHA256SignatureMethod,
 		dsig.ECDSASHA384SignatureMethod,
 		dsig.ECDSASHA512SignatureMethod:
-		if _, ok := sp.Key.(*ecdsa.PrivateKey); !ok {
-			return nil, fmt.Errorf("signature method %s requires a key of type ecdsa.PrivateKey, not %T", sp.SignatureMethod, sp.Key)
+		if _, ok := sp.GetKey().(*ecdsa.PrivateKey); !ok {
+			return nil, fmt.Errorf("signature method %s requires a key of type ecdsa.PrivateKey, not %T", sp.GetSignatureMethod(), sp.GetKey())
 		}
 	default:
-		return nil, fmt.Errorf("invalid signing method %s", sp.SignatureMethod)
+		return nil, fmt.Errorf("invalid signing method %s", sp.GetSignatureMethod())
 	}
 
 	keyStore := dsig.TLSCertKeyStore(keyPair)
@@ -772,12 +817,12 @@ func GetSigningContext(sp *ServiceProviderImpl) (*dsig.SigningContext, error) {
 	if err != nil {
 		return nil, err
 	}
-	signingContext, err := dsig.NewSigningContext(sp.Key, chain)
+	signingContext, err := dsig.NewSigningContext(sp.GetKey(), chain)
 	if err != nil {
 		return nil, err
 	}
 	signingContext.Canonicalizer = dsig.MakeC14N10ExclusiveCanonicalizerWithPrefixList(canonicalizerPrefixList)
-	if err := signingContext.SetSignatureMethod(sp.SignatureMethod); err != nil {
+	if err := signingContext.SetSignatureMethod(sp.GetSignatureMethod()); err != nil {
 		return nil, err
 	}
 

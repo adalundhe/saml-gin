@@ -122,9 +122,17 @@ func NewMiddlewareTest(t *testing.T) *MiddlewareTest {
 
 	serviceProvider := test.Middleware.GetServiceProvider()
 
-	serviceProvider.MetadataURL.Path = "/saml2/metadata"
-	serviceProvider.AcsURL.Path = "/saml2/acs"
-	serviceProvider.SloURL.Path = "/saml2/slo"
+	metadataUrl := serviceProvider.GetMetadataURL()
+	metadataUrl.Path = "/saml2/metadata"
+	serviceProvider.SetMetadataUrl(metadataUrl)
+
+	acsUrl := serviceProvider.GetAcsUrl()
+	acsUrl.Path = "/saml2/acs"
+	serviceProvider.SetAcsUrl(*acsUrl)
+
+	sloUrl := serviceProvider.GetSloUrl()
+	sloUrl.Path = "/saml2/slo"
+	serviceProvider.SetSloUrl(sloUrl)
 
 	test.Middleware.SetServiceProvider(serviceProvider)
 
@@ -174,7 +182,10 @@ func TestMiddlewareRequireAccountNoCreds(t *testing.T) {
 
 	test := NewMiddlewareTest(t)
 	serviceProvider := test.Middleware.GetServiceProvider()
-	serviceProvider.AcsURL.Scheme = "http"
+
+	acsUrl := serviceProvider.GetAcsUrl()
+	acsUrl.Scheme = "http"
+	serviceProvider.SetAcsUrl(*acsUrl)
 	test.Middleware.SetServiceProvider(serviceProvider)
 
 	handler := test.Middleware.RequireAccount()
@@ -242,7 +253,11 @@ func TestMiddlewareRequireAccountNoCredsSecure(t *testing.T) {
 
 func TestMiddlewareRequireAccountNoCredsPostBinding(t *testing.T) {
 	test := NewMiddlewareTest(t)
-	test.Middleware.GetServiceProvider().IDPMetadata.IDPSSODescriptors[0].SingleSignOnServices = test.Middleware.GetServiceProvider().IDPMetadata.IDPSSODescriptors[0].SingleSignOnServices[1:2]
+
+	idpMetadata := test.Middleware.GetServiceProvider().GetIDPMetadata()
+	idpMetadata.IDPSSODescriptors[0].SingleSignOnServices = idpMetadata.IDPSSODescriptors[0].SingleSignOnServices[1:2]
+	test.Middleware.GetServiceProvider().SetIDPMetadata(idpMetadata)
+
 	serviceProvider := test.Middleware.GetServiceProvider()
 	assert.Check(t, is.Equal("",
 		serviceProvider.GetSSOBindingLocation(saml.HTTPRedirectBinding)))
