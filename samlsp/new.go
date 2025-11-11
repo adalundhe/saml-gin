@@ -94,7 +94,7 @@ func DefaultTrackedRequestCodec(opts Options) JWTTrackedRequestCodec {
 
 // DefaultRequestTracker returns a new RequestTracker for the provided options,
 // a CookieRequestTracker which uses cookies to track pending requests.
-func DefaultRequestTracker(opts Options, serviceProvider *saml.ServiceProvider) CookieRequestTracker {
+func DefaultRequestTracker(opts Options, serviceProvider saml.ServiceProvider) CookieRequestTracker {
 	return CookieRequestTracker{
 		ServiceProvider: serviceProvider,
 		NamePrefix:      "saml_",
@@ -130,7 +130,7 @@ func DefaultServiceProvider(opts Options) saml.ServiceProvider {
 		opts.LogoutBindings = []string{saml.HTTPPostBinding}
 	}
 
-	return saml.ServiceProvider{
+	return saml.NewServiceProvider(&saml.ServiceProviderOpts{
 		EntityID:              opts.EntityID,
 		Key:                   opts.Key,
 		Certificate:           opts.Certificate,
@@ -146,7 +146,7 @@ func DefaultServiceProvider(opts Options) saml.ServiceProvider {
 		AllowIDPInitiated:     opts.AllowIDPInitiated,
 		DefaultRedirectURI:    opts.DefaultRedirectURI,
 		LogoutBindings:        opts.LogoutBindings,
-	}
+	})
 }
 
 func defaultSigningMethodForKey(key crypto.Signer) string {
@@ -190,7 +190,7 @@ func New(opts Options) (Middleware, error) {
 		AssertionHandler: DefaultAssertionHandler(opts),
 		ForceRedirectUrl: forceRedirectUrl,
 	}
-	m.RequestTracker = DefaultRequestTracker(opts, &m.ServiceProvider)
+	m.RequestTracker = DefaultRequestTracker(opts, m.ServiceProvider)
 	if opts.UseArtifactResponse {
 		m.ResponseBinding = saml.HTTPArtifactBinding
 	}

@@ -67,7 +67,173 @@ type SignatureVerifier interface {
 //
 // See the example directory for an example of a web application using
 // the service provider interface.
-type ServiceProvider struct {
+
+type ServiceProviderOpts struct {
+	EntityID string
+
+	// Key is private key we use to sign requests. It must be either an
+	// *rsa.PrivateKey or an *ecdsa.PrivateKey.
+	Key crypto.Signer
+
+	// Certificate is the RSA public part of Key.
+	Certificate   *x509.Certificate
+	Intermediates []*x509.Certificate
+
+	// HTTPClient to use during SAML artifact resolution
+	HTTPClient *http.Client
+
+	// MetadataURL is the full URL to the metadata endpoint on this host,
+	// i.e. https://example.com/saml/metadata
+	MetadataURL url.URL
+
+	// AcsURL is the full URL to the SAML Assertion Customer Service endpoint
+	// on this host, i.e. https://example.com/saml/acs
+	AcsURL url.URL
+
+	// SloURL is the full URL to the SAML Single Logout endpoint on this host.
+	// i.e. https://example.com/saml/slo
+	SloURL url.URL
+
+	// IDPMetadata is the metadata from the identity provider.
+	IDPMetadata *EntityDescriptor
+
+	// IDPCertificateFingerprint is fingerprint of the idp public certificate. If this field is specified,
+	// IDPCertificateFingerprintAlgorithm must also be specified, and IDPCertificate must not be specified.
+	IDPCertificateFingerprint *string
+	// IDPCertificateFingerprintAlgorithm is fingerprint algorithm used to obtain fingerprint of the idp public
+	// certificate.
+	// If this field is specified, IDPCertificateFingerprint must also be specified, and IDPCertificate must not be specified.
+	IDPCertificateFingerprintAlgorithm *string
+
+	// IDPCertificate to use as idp public certificate. If this field is specified, IDPCertificateFingerprint and
+	// IDPCertificateFingerprintAlgorithm must not be specified.
+	IDPCertificate *string
+
+	// AuthnNameIDFormat is the format used in the NameIDPolicy for
+	// authentication requests
+	AuthnNameIDFormat NameIDFormat
+
+	// MetadataValidDuration is a duration used to calculate validUntil
+	// attribute in the metadata endpoint
+	MetadataValidDuration time.Duration
+
+	// ForceAuthn allows you to force re-authentication of users even if the user
+	// has a SSO session at the IdP.
+	ForceAuthn *bool
+
+	// RequestedAuthnContext allow you to specify the requested authentication
+	// context in authentication requests
+	RequestedAuthnContext *RequestedAuthnContext
+
+	// AllowIdpInitiated
+	AllowIDPInitiated bool
+
+	// DefaultRedirectURI where untracked requests (as of IDPInitiated) are redirected to
+	DefaultRedirectURI string
+
+	// SignatureVerifier, if non-nil, allows you to implement an alternative way
+	// to verify signatures.
+	SignatureVerifier SignatureVerifier
+
+	// SignatureMethod, if non-empty, authentication requests will be signed.
+	//
+	// The method specified here must be consistent with the type of Key.
+	//
+	// If Key is *rsa.PrivateKey, then this must be one of dsig.RSASHA1SignatureMethod,
+	// dsig.RSASHA256SignatureMethod, dsig.RSASHA384SignatureMethod, or
+	// dsig.RSASHA512SignatureMethod:
+	//
+	// If Key is *ecdsa.PrivateKey, then this must be one of dsig.ECDSASHA1SignatureMethod,
+	// dsig.ECDSASHA256SignatureMethod, dsig.ECDSASHA384SignatureMethod, or
+	// dsig.ECDSASHA512SignatureMethod.
+	SignatureMethod string
+
+	// LogoutBindings specify the bindings available for SLO endpoint. If empty,
+	// HTTP-POST binding is used.
+	LogoutBindings []string
+
+	// ValidateAudienceRestriction allows you to override the default audience validation
+	// for an assertion. If nil, the default audience validation is used.
+	ValidateAudienceRestriction func(assertion *Assertion) error
+
+	// ValidateRequestID allows you to override the default request ID validation.
+	// If nil, the default request ID validation is used.
+	ValidateRequestID func(response Response, possibleRequestIDs []string) error
+}
+
+type ServiceProvider interface {
+	SetAuthnNameIDFormat(format NameIDFormat)
+	GetIDPMetadata() *EntityDescriptor
+	SetIDPMetadata(idpMetadata *EntityDescriptor)
+	GetAcsUrl() *url.URL
+	GetMetadataURL() url.URL
+	SetAcsUrl(url url.URL)
+	SetKey(key crypto.Signer)
+	SetMetadataUrl(metadataUrl url.URL)
+	GetSloUrl() url.URL
+	SetSloUrl(sloUrl url.URL)
+	IDPInitiatedAllowed() bool
+	GetDefaultRedirectURI() string
+	GetSignatureMethod() string
+	GetKey() crypto.Signer
+	GetCertificate() *x509.Certificate
+	Metadata() *EntityDescriptor
+	ValidateAssertion(assertion *Assertion, possibleRequestIDs []string, now time.Time) error
+	DecryptElement(encryptedEl *etree.Element) (*etree.Element, error)
+	MakeRedirectAuthenticationRequest(relayState string) (*url.URL, error)
+	GetSSOBindingLocation(binding string) string
+	GetArtifactBindingLocation(binding string) string
+	GetSLOBindingLocation(binding string) string
+	MakeArtifactResolveRequest(artifactID string) (*ArtifactResolve, error)
+	MakeAuthenticationRequest(idpURL string, binding string, resultBinding string) (*AuthnRequest, error)
+	SignArtifactResolve(req *ArtifactResolve) error
+	SignAuthnRequest(req *AuthnRequest) error
+	MakePostAuthenticationRequest(relayState string) ([]byte, error)
+	ParseResponse(req *http.Request, possibleRequestIDs []string) (*Assertion, error)
+	ParseXMLArtifactResponse(soapResponseXML []byte, possibleRequestIDs []string, artifactRequestID string, currentURL url.URL) (*Assertion, error)
+	ParseXMLResponse(decodedResponseXML []byte, possibleRequestIDs []string, currentURL url.URL) (*Assertion, error)
+	SignLogoutRequest(req *LogoutRequest) error
+	MakeLogoutRequest(idpURL, nameID string) (*LogoutRequest, error)
+	MakeRedirectLogoutRequest(nameID, relayState string) (*url.URL, error)
+	MakePostLogoutRequest(nameID, relayState string) ([]byte, error)
+	MakeLogoutResponse(idpURL, logoutRequestID string) (*LogoutResponse, error)
+	MakeRedirectLogoutResponse(logoutRequestID, relayState string) (*url.URL, error)
+	MakePostLogoutResponse(logoutRequestID, relayState string) ([]byte, error)
+	SignLogoutResponse(resp *LogoutResponse) error
+	ValidateLogoutResponseRequest(req *http.Request) error
+	ValidateLogoutResponseForm(postFormData string) error
+	ValidateLogoutResponseRedirect(queryParameterData string) error
+}
+
+func NewServiceProvider(opts *ServiceProviderOpts) ServiceProvider {
+	return &ServiceProviderImpl{
+		EntityID:                           opts.EntityID,
+		Key:                                opts.Key,
+		Certificate:                        opts.Certificate,
+		Intermediates:                      opts.Intermediates,
+		HTTPClient:                         opts.HTTPClient,
+		MetadataURL:                        opts.MetadataURL,
+		AcsURL:                             opts.AcsURL,
+		SloURL:                             opts.SloURL,
+		IDPMetadata:                        opts.IDPMetadata,
+		IDPCertificateFingerprint:          opts.IDPCertificateFingerprint,
+		IDPCertificateFingerprintAlgorithm: opts.IDPCertificateFingerprintAlgorithm,
+		IDPCertificate:                     opts.IDPCertificate,
+		AuthnNameIDFormat:                  opts.AuthnNameIDFormat,
+		MetadataValidDuration:              opts.MetadataValidDuration,
+		ForceAuthn:                         opts.ForceAuthn,
+		RequestedAuthnContext:              opts.RequestedAuthnContext,
+		AllowIDPInitiated:                  opts.AllowIDPInitiated,
+		DefaultRedirectURI:                 opts.DefaultRedirectURI,
+		SignatureVerifier:                  opts.SignatureVerifier,
+		SignatureMethod:                    opts.SignatureMethod,
+		LogoutBindings:                     opts.LogoutBindings,
+		ValidateAudienceRestriction:        opts.ValidateAudienceRestriction,
+		ValidateRequestID:                  opts.ValidateRequestID,
+	}
+}
+
+type ServiceProviderImpl struct {
 	// Entity ID is optional - if not specified then MetadataURL will be used
 	EntityID string
 
@@ -177,8 +343,63 @@ const DefaultValidDuration = time.Hour * 24 * 2
 // DefaultCacheDuration is how long we ask the IDP to cache the SP metadata.
 const DefaultCacheDuration = time.Hour * 24 * 1
 
+func (sp *ServiceProviderImpl) GetIDPMetadata() *EntityDescriptor {
+	return sp.IDPMetadata
+}
+func (sp *ServiceProviderImpl) SetIDPMetadata(idpMetadata *EntityDescriptor) {
+	sp.IDPMetadata = idpMetadata
+}
+
+func (sp *ServiceProviderImpl) GetAcsUrl() *url.URL {
+	return &sp.AcsURL
+}
+
+func (sp *ServiceProviderImpl) GetMetadataURL() url.URL {
+	return sp.MetadataURL
+}
+
+func (sp *ServiceProviderImpl) SetAcsUrl(url url.URL) {
+	sp.AcsURL = url
+}
+
+func (sp *ServiceProviderImpl) SetMetadataUrl(metadataUrl url.URL) {
+	sp.MetadataURL = metadataUrl
+}
+
+func (sp *ServiceProviderImpl) GetSloUrl() url.URL {
+	return sp.SloURL
+}
+
+func (sp *ServiceProviderImpl) SetSloUrl(sloUrl url.URL) {
+	sp.SloURL = sloUrl
+}
+
+func (sp *ServiceProviderImpl) SetKey(key crypto.Signer) {
+	sp.Key = key
+}
+
+func (sp *ServiceProviderImpl) IDPInitiatedAllowed() bool {
+	return sp.AllowIDPInitiated
+}
+
+func (sp *ServiceProviderImpl) GetDefaultRedirectURI() string {
+	return sp.DefaultRedirectURI
+}
+
+func (sp *ServiceProviderImpl) GetSignatureMethod() string {
+	return sp.SignatureMethod
+}
+
+func (sp *ServiceProviderImpl) GetKey() crypto.Signer {
+	return sp.Key
+}
+
+func (sp *ServiceProviderImpl) GetCertificate() *x509.Certificate {
+	return sp.Certificate
+}
+
 // Metadata returns the service provider metadata
-func (sp *ServiceProvider) Metadata() *EntityDescriptor {
+func (sp *ServiceProviderImpl) Metadata() *EntityDescriptor {
 	validDuration := DefaultValidDuration
 	if sp.MetadataValidDuration > 0 {
 		validDuration = sp.MetadataValidDuration
@@ -273,7 +494,7 @@ func (sp *ServiceProvider) Metadata() *EntityDescriptor {
 // MakeRedirectAuthenticationRequest creates a SAML authentication request using
 // the HTTP-Redirect binding. It returns a URL that we will redirect the user to
 // in order to start the auth process.
-func (sp *ServiceProvider) MakeRedirectAuthenticationRequest(relayState string) (*url.URL, error) {
+func (sp *ServiceProviderImpl) MakeRedirectAuthenticationRequest(relayState string) (*url.URL, error) {
 	req, err := sp.MakeAuthenticationRequest(sp.GetSSOBindingLocation(HTTPRedirectBinding), HTTPRedirectBinding, HTTPPostBinding)
 	if err != nil {
 		return nil, err
@@ -282,7 +503,7 @@ func (sp *ServiceProvider) MakeRedirectAuthenticationRequest(relayState string) 
 }
 
 // Redirect returns a URL suitable for using the redirect binding with the request
-func (r *AuthnRequest) Redirect(relayState string, sp *ServiceProvider) (*url.URL, error) {
+func (r *AuthnRequest) Redirect(relayState string, sp ServiceProvider) (*url.URL, error) {
 	var requestStr strings.Builder
 	base64Writer := base64.NewEncoder(base64.StdEncoding, &requestStr)
 	compressedWriter, _ := flate.NewWriter(base64Writer, 9)
@@ -314,8 +535,8 @@ func (r *AuthnRequest) Redirect(relayState string, sp *ServiceProvider) (*url.UR
 	if relayState != "" {
 		query += "&RelayState=" + relayState
 	}
-	if len(sp.SignatureMethod) > 0 {
-		query += "&SigAlg=" + url.QueryEscape(sp.SignatureMethod)
+	if len(sp.GetSignatureMethod()) > 0 {
+		query += "&SigAlg=" + url.QueryEscape(sp.GetSignatureMethod())
 		signingContext, err := GetSigningContext(sp)
 
 		if err != nil {
@@ -334,9 +555,13 @@ func (r *AuthnRequest) Redirect(relayState string, sp *ServiceProvider) (*url.UR
 	return rv, nil
 }
 
+func (sp *ServiceProviderImpl) SetAuthnNameIDFormat(format NameIDFormat) {
+	sp.AuthnNameIDFormat = format
+}
+
 // GetSSOBindingLocation returns URL for the IDP's Single Sign On Service binding
 // of the specified type (HTTPRedirectBinding or HTTPPostBinding)
-func (sp *ServiceProvider) GetSSOBindingLocation(binding string) string {
+func (sp *ServiceProviderImpl) GetSSOBindingLocation(binding string) string {
 	for _, idpSSODescriptor := range sp.IDPMetadata.IDPSSODescriptors {
 		for _, singleSignOnService := range idpSSODescriptor.SingleSignOnServices {
 			if singleSignOnService.Binding == binding {
@@ -349,7 +574,7 @@ func (sp *ServiceProvider) GetSSOBindingLocation(binding string) string {
 
 // GetArtifactBindingLocation returns URL for the IDP's Artifact binding of the
 // specified type
-func (sp *ServiceProvider) GetArtifactBindingLocation(binding string) string {
+func (sp *ServiceProviderImpl) GetArtifactBindingLocation(binding string) string {
 	for _, idpSSODescriptor := range sp.IDPMetadata.IDPSSODescriptors {
 		for _, artifactResolutionService := range idpSSODescriptor.ArtifactResolutionServices {
 			if artifactResolutionService.Binding == binding {
@@ -362,7 +587,7 @@ func (sp *ServiceProvider) GetArtifactBindingLocation(binding string) string {
 
 // GetSLOBindingLocation returns URL for the IDP's Single Log Out Service binding
 // of the specified type (HTTPRedirectBinding or HTTPPostBinding)
-func (sp *ServiceProvider) GetSLOBindingLocation(binding string) string {
+func (sp *ServiceProviderImpl) GetSLOBindingLocation(binding string) string {
 	for _, idpSSODescriptor := range sp.IDPMetadata.IDPSSODescriptors {
 		for _, singleLogoutService := range idpSSODescriptor.SingleLogoutServices {
 			if singleLogoutService.Binding == binding {
@@ -375,7 +600,7 @@ func (sp *ServiceProvider) GetSLOBindingLocation(binding string) string {
 
 // getIDPSigningCerts returns the certificates which we can use to verify things
 // signed by the IDP in PEM format, or nil if no such certificate is found.
-func (sp *ServiceProvider) getIDPSigningCerts() ([]*x509.Certificate, error) {
+func (sp *ServiceProviderImpl) getIDPSigningCerts() ([]*x509.Certificate, error) {
 	var certStrs []string
 
 	// We need to include non-empty certs where the "use" attribute is
@@ -418,7 +643,7 @@ func (sp *ServiceProvider) getIDPSigningCerts() ([]*x509.Certificate, error) {
 	return certs, nil
 }
 
-func (sp *ServiceProvider) getCertBasedOnFingerprint(el *etree.Element) ([]*x509.Certificate, error) {
+func (sp *ServiceProviderImpl) getCertBasedOnFingerprint(el *etree.Element) ([]*x509.Certificate, error) {
 	x509CertEl := el.FindElement("./Signature/KeyInfo/X509Data/X509Certificate")
 	if x509CertEl == nil {
 		return nil, fmt.Errorf("cannot validate signature on %s: no certificate present", el.Tag)
@@ -498,7 +723,7 @@ func fingerprintFormat(fp []byte) (string, error) {
 }
 
 // MakeArtifactResolveRequest produces a new ArtifactResolve object to send to the idp's Artifact resolver
-func (sp *ServiceProvider) MakeArtifactResolveRequest(artifactID string) (*ArtifactResolve, error) {
+func (sp *ServiceProviderImpl) MakeArtifactResolveRequest(artifactID string) (*ArtifactResolve, error) {
 	req := ArtifactResolve{
 		ID:           fmt.Sprintf("id-%x", randomBytes(20)),
 		IssueInstant: TimeNow(),
@@ -521,7 +746,7 @@ func (sp *ServiceProvider) MakeArtifactResolveRequest(artifactID string) (*Artif
 
 // MakeAuthenticationRequest produces a new AuthnRequest object to send to the idpURL
 // that uses the specified binding (HTTPRedirectBinding or HTTPPostBinding)
-func (sp *ServiceProvider) MakeAuthenticationRequest(idpURL string, binding string, resultBinding string) (*AuthnRequest, error) {
+func (sp *ServiceProviderImpl) MakeAuthenticationRequest(idpURL string, binding string, resultBinding string) (*AuthnRequest, error) {
 
 	allowCreate := true
 	nameIDFormat := sp.nameIDFormat()
@@ -556,35 +781,35 @@ func (sp *ServiceProvider) MakeAuthenticationRequest(idpURL string, binding stri
 }
 
 // GetSigningContext returns a dsig.SigningContext initialized based on the Service Provider's configuration
-func GetSigningContext(sp *ServiceProvider) (*dsig.SigningContext, error) {
+func GetSigningContext(sp ServiceProvider) (*dsig.SigningContext, error) {
 	keyPair := tls.Certificate{
-		Certificate: [][]byte{sp.Certificate.Raw},
-		PrivateKey:  sp.Key,
-		Leaf:        sp.Certificate,
+		Certificate: [][]byte{sp.GetCertificate().Raw},
+		PrivateKey:  sp.GetKey(),
+		Leaf:        sp.GetCertificate(),
 	}
 	// TODO: add intermediates for SP
 	// for _, cert := range sp.Intermediates {
 	// 	keyPair.Certificate = append(keyPair.Certificate, cert.Raw)
 	// }
 
-	switch sp.SignatureMethod {
+	switch sp.GetSignatureMethod() {
 	case dsig.RSASHA1SignatureMethod,
 		dsig.RSASHA256SignatureMethod,
 		dsig.RSASHA384SignatureMethod,
 		dsig.RSASHA512SignatureMethod:
-		if _, ok := sp.Key.(*rsa.PrivateKey); !ok {
-			return nil, fmt.Errorf("signature method %s requires a key of type rsa.PrivateKey, not %T", sp.SignatureMethod, sp.Key)
+		if _, ok := sp.GetKey().(*rsa.PrivateKey); !ok {
+			return nil, fmt.Errorf("signature method %s requires a key of type rsa.PrivateKey, not %T", sp.GetSignatureMethod(), sp.GetKey())
 		}
 
 	case dsig.ECDSASHA1SignatureMethod,
 		dsig.ECDSASHA256SignatureMethod,
 		dsig.ECDSASHA384SignatureMethod,
 		dsig.ECDSASHA512SignatureMethod:
-		if _, ok := sp.Key.(*ecdsa.PrivateKey); !ok {
-			return nil, fmt.Errorf("signature method %s requires a key of type ecdsa.PrivateKey, not %T", sp.SignatureMethod, sp.Key)
+		if _, ok := sp.GetKey().(*ecdsa.PrivateKey); !ok {
+			return nil, fmt.Errorf("signature method %s requires a key of type ecdsa.PrivateKey, not %T", sp.GetSignatureMethod(), sp.GetKey())
 		}
 	default:
-		return nil, fmt.Errorf("invalid signing method %s", sp.SignatureMethod)
+		return nil, fmt.Errorf("invalid signing method %s", sp.GetSignatureMethod())
 	}
 
 	keyStore := dsig.TLSCertKeyStore(keyPair)
@@ -592,12 +817,12 @@ func GetSigningContext(sp *ServiceProvider) (*dsig.SigningContext, error) {
 	if err != nil {
 		return nil, err
 	}
-	signingContext, err := dsig.NewSigningContext(sp.Key, chain)
+	signingContext, err := dsig.NewSigningContext(sp.GetKey(), chain)
 	if err != nil {
 		return nil, err
 	}
 	signingContext.Canonicalizer = dsig.MakeC14N10ExclusiveCanonicalizerWithPrefixList(canonicalizerPrefixList)
-	if err := signingContext.SetSignatureMethod(sp.SignatureMethod); err != nil {
+	if err := signingContext.SetSignatureMethod(sp.GetSignatureMethod()); err != nil {
 		return nil, err
 	}
 
@@ -605,7 +830,7 @@ func GetSigningContext(sp *ServiceProvider) (*dsig.SigningContext, error) {
 }
 
 // SignArtifactResolve adds the `Signature` element to the `ArtifactResolve`.
-func (sp *ServiceProvider) SignArtifactResolve(req *ArtifactResolve) error {
+func (sp *ServiceProviderImpl) SignArtifactResolve(req *ArtifactResolve) error {
 	signingContext, err := GetSigningContext(sp)
 	if err != nil {
 		return err
@@ -623,7 +848,7 @@ func (sp *ServiceProvider) SignArtifactResolve(req *ArtifactResolve) error {
 }
 
 // SignAuthnRequest adds the `Signature` element to the `AuthnRequest`.
-func (sp *ServiceProvider) SignAuthnRequest(req *AuthnRequest) error {
+func (sp *ServiceProviderImpl) SignAuthnRequest(req *AuthnRequest) error {
 
 	signingContext, err := GetSigningContext(sp)
 	if err != nil {
@@ -644,7 +869,7 @@ func (sp *ServiceProvider) SignAuthnRequest(req *AuthnRequest) error {
 // MakePostAuthenticationRequest creates a SAML authentication request using
 // the HTTP-POST binding. It returns HTML text representing an HTML form that
 // can be sent presented to a browser to initiate the login process.
-func (sp *ServiceProvider) MakePostAuthenticationRequest(relayState string) ([]byte, error) {
+func (sp *ServiceProviderImpl) MakePostAuthenticationRequest(relayState string) ([]byte, error) {
 	req, err := sp.MakeAuthenticationRequest(sp.GetSSOBindingLocation(HTTPPostBinding), HTTPPostBinding, HTTPPostBinding)
 	if err != nil {
 		return nil, err
@@ -739,14 +964,14 @@ func (e ErrBadStatus) Error() string {
 
 // ParseResponse extracts the SAML IDP response received in req, resolves
 // artifacts when necessary, validates it, and returns the verified assertion.
-func (sp *ServiceProvider) ParseResponse(req *http.Request, possibleRequestIDs []string) (*Assertion, error) {
+func (sp *ServiceProviderImpl) ParseResponse(req *http.Request, possibleRequestIDs []string) (*Assertion, error) {
 	if artifactID := req.Form.Get("SAMLart"); artifactID != "" {
 		return sp.handleArtifactRequest(req.Context(), artifactID, possibleRequestIDs)
 	}
 	return sp.parseResponseHTTP(req, possibleRequestIDs)
 }
 
-func (sp *ServiceProvider) handleArtifactRequest(ctx context.Context, artifactID string, possibleRequestIDs []string) (*Assertion, error) {
+func (sp *ServiceProviderImpl) handleArtifactRequest(ctx context.Context, artifactID string, possibleRequestIDs []string) (*Assertion, error) {
 	retErr := &InvalidResponseError{Now: TimeNow()}
 
 	artifactResolveRequest, err := sp.MakeArtifactResolveRequest(artifactID)
@@ -799,7 +1024,7 @@ func (sp *ServiceProvider) handleArtifactRequest(ctx context.Context, artifactID
 	return assertion, nil
 }
 
-func (sp *ServiceProvider) parseResponseHTTP(req *http.Request, possibleRequestIDs []string) (*Assertion, error) {
+func (sp *ServiceProviderImpl) parseResponseHTTP(req *http.Request, possibleRequestIDs []string) (*Assertion, error) {
 	retErr := &InvalidResponseError{
 		Now: TimeNow(),
 	}
@@ -827,7 +1052,7 @@ func (sp *ServiceProvider) parseResponseHTTP(req *http.Request, possibleRequestI
 // properties are useful in describing which part of the parsing process
 // failed. However, to discourage inadvertent disclosure the diagnostic
 // information, the Error() method returns a static string.
-func (sp *ServiceProvider) ParseXMLArtifactResponse(soapResponseXML []byte, possibleRequestIDs []string, artifactRequestID string, currentURL url.URL) (*Assertion, error) {
+func (sp *ServiceProviderImpl) ParseXMLArtifactResponse(soapResponseXML []byte, possibleRequestIDs []string, artifactRequestID string, currentURL url.URL) (*Assertion, error) {
 	now := TimeNow()
 	retErr := &InvalidResponseError{
 		Response: string(soapResponseXML),
@@ -870,7 +1095,7 @@ func (sp *ServiceProvider) ParseXMLArtifactResponse(soapResponseXML []byte, poss
 	return sp.parseArtifactResponse(artifactResponseEl, possibleRequestIDs, artifactRequestID, now, currentURL)
 }
 
-func (sp *ServiceProvider) parseArtifactResponse(artifactResponseEl *etree.Element, possibleRequestIDs []string, artifactRequestID string, now time.Time, currentURL url.URL) (*Assertion, error) {
+func (sp *ServiceProviderImpl) parseArtifactResponse(artifactResponseEl *etree.Element, possibleRequestIDs []string, artifactRequestID string, now time.Time, currentURL url.URL) (*Assertion, error) {
 	retErr := &InvalidResponseError{
 		Now:      now,
 		Response: elementToString(artifactResponseEl),
@@ -938,7 +1163,7 @@ func (sp *ServiceProvider) parseArtifactResponse(artifactResponseEl *etree.Eleme
 // properties are useful in describing which part of the parsing process
 // failed. However, to discourage inadvertent disclosure the diagnostic
 // information, the Error() method returns a static string.
-func (sp *ServiceProvider) ParseXMLResponse(decodedResponseXML []byte, possibleRequestIDs []string, currentURL url.URL) (*Assertion, error) {
+func (sp *ServiceProviderImpl) ParseXMLResponse(decodedResponseXML []byte, possibleRequestIDs []string, currentURL url.URL) (*Assertion, error) {
 	now := TimeNow()
 	var err error
 	retErr := &InvalidResponseError{
@@ -984,7 +1209,7 @@ const (
 // This function handles decrypting the message, verifying the digital
 // signature on the assertion, and verifying that the specified conditions
 // and properties are met.
-func (sp *ServiceProvider) parseResponse(responseEl *etree.Element, possibleRequestIDs []string, now time.Time, signatureRequirement signatureRequirement, currentURL url.URL) (*Assertion, error) {
+func (sp *ServiceProviderImpl) parseResponse(responseEl *etree.Element, possibleRequestIDs []string, now time.Time, signatureRequirement signatureRequirement, currentURL url.URL) (*Assertion, error) {
 	var responseSignatureErr error
 	var responseHasSignature bool
 	if signatureRequirement == signatureRequired {
@@ -1092,7 +1317,7 @@ func (sp *ServiceProvider) parseResponse(responseEl *etree.Element, possibleRequ
 	return &assertions[0], nil
 }
 
-func (sp *ServiceProvider) validateRequestID(response Response, possibleRequestIDs []string) error {
+func (sp *ServiceProviderImpl) validateRequestID(response Response, possibleRequestIDs []string) error {
 	if sp.ValidateRequestID != nil {
 		return sp.ValidateRequestID(response, possibleRequestIDs)
 	}
@@ -1113,15 +1338,15 @@ func (sp *ServiceProvider) validateRequestID(response Response, possibleRequestI
 	return nil
 }
 
-func (sp *ServiceProvider) parseEncryptedAssertion(encryptedAssertionEl *etree.Element, possibleRequestIDs []string, now time.Time, signatureRequirement signatureRequirement) (*Assertion, error) {
-	assertionEl, err := sp.decryptElement(encryptedAssertionEl)
+func (sp *ServiceProviderImpl) parseEncryptedAssertion(encryptedAssertionEl *etree.Element, possibleRequestIDs []string, now time.Time, signatureRequirement signatureRequirement) (*Assertion, error) {
+	assertionEl, err := sp.DecryptElement(encryptedAssertionEl)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt EncryptedAssertion: %v", err)
 	}
 	return sp.parseAssertion(assertionEl, possibleRequestIDs, now, signatureRequirement)
 }
 
-func (sp *ServiceProvider) decryptElement(encryptedEl *etree.Element) (*etree.Element, error) {
+func (sp *ServiceProviderImpl) DecryptElement(encryptedEl *etree.Element) (*etree.Element, error) {
 	encryptedDataEl, err := findOneChild(encryptedEl, "http://www.w3.org/2001/04/xmlenc#", "EncryptedData")
 	if err != nil {
 		return nil, err
@@ -1153,7 +1378,7 @@ func (sp *ServiceProvider) decryptElement(encryptedEl *etree.Element) (*etree.El
 	return doc.Root(), nil
 }
 
-func (sp *ServiceProvider) parseAssertion(assertionEl *etree.Element, possibleRequestIDs []string, now time.Time, signatureRequirement signatureRequirement) (*Assertion, error) {
+func (sp *ServiceProviderImpl) parseAssertion(assertionEl *etree.Element, possibleRequestIDs []string, now time.Time, signatureRequirement signatureRequirement) (*Assertion, error) {
 	if signatureRequirement == signatureRequired {
 		sigErr := sp.validateSignature(assertionEl)
 		if sigErr != nil {
@@ -1167,7 +1392,7 @@ func (sp *ServiceProvider) parseAssertion(assertionEl *etree.Element, possibleRe
 		return nil, err
 	}
 
-	if err := sp.validateAssertion(&assertion, possibleRequestIDs, now); err != nil {
+	if err := sp.ValidateAssertion(&assertion, possibleRequestIDs, now); err != nil {
 		return nil, err
 	}
 
@@ -1178,7 +1403,7 @@ func (sp *ServiceProvider) parseAssertion(assertionEl *etree.Element, possibleRe
 // the requirements to accept. If validation fails, it returns an error describing
 // the failure. (The digital signature on the assertion is not checked -- this
 // should be done before calling this function).
-func (sp *ServiceProvider) validateAssertion(assertion *Assertion, possibleRequestIDs []string, now time.Time) error {
+func (sp *ServiceProviderImpl) ValidateAssertion(assertion *Assertion, possibleRequestIDs []string, now time.Time) error {
 	if assertion.IssueInstant.Add(MaxIssueDelay).Before(now) {
 		return fmt.Errorf("expired on %s", assertion.IssueInstant.Add(MaxIssueDelay))
 	}
@@ -1236,7 +1461,7 @@ func (sp *ServiceProvider) validateAssertion(assertion *Assertion, possibleReque
 	return nil
 }
 
-func (sp *ServiceProvider) validateAudienceRestriction(assertion *Assertion) error {
+func (sp *ServiceProviderImpl) validateAudienceRestriction(assertion *Assertion) error {
 	if sp.ValidateAudienceRestriction != nil {
 		if err := sp.ValidateAudienceRestriction(assertion); err != nil {
 			return fmt.Errorf("audience restriction validation failed: %w", err)
@@ -1260,7 +1485,7 @@ func (sp *ServiceProvider) validateAudienceRestriction(assertion *Assertion) err
 var errSignatureElementNotPresent = errors.New("signature element not present")
 
 // validateSignature returns nil iff the Signature embedded in the element is valid
-func (sp *ServiceProvider) validateSignature(el *etree.Element) error {
+func (sp *ServiceProviderImpl) validateSignature(el *etree.Element) error {
 	sigEl, err := findChild(el, "http://www.w3.org/2000/09/xmldsig#", "Signature")
 	if err != nil {
 		return err
@@ -1345,7 +1570,7 @@ func (sp *ServiceProvider) validateSignature(el *etree.Element) error {
 }
 
 // SignLogoutRequest adds the `Signature` element to the `LogoutRequest`.
-func (sp *ServiceProvider) SignLogoutRequest(req *LogoutRequest) error {
+func (sp *ServiceProviderImpl) SignLogoutRequest(req *LogoutRequest) error {
 	signingContext, err := GetSigningContext(sp)
 	if err != nil {
 		return err
@@ -1363,7 +1588,7 @@ func (sp *ServiceProvider) SignLogoutRequest(req *LogoutRequest) error {
 }
 
 // MakeLogoutRequest produces a new LogoutRequest object for idpURL.
-func (sp *ServiceProvider) MakeLogoutRequest(idpURL, nameID string) (*LogoutRequest, error) {
+func (sp *ServiceProviderImpl) MakeLogoutRequest(idpURL, nameID string) (*LogoutRequest, error) {
 
 	req := LogoutRequest{
 		ID:           fmt.Sprintf("id-%x", randomBytes(20)),
@@ -1392,7 +1617,7 @@ func (sp *ServiceProvider) MakeLogoutRequest(idpURL, nameID string) (*LogoutRequ
 // MakeRedirectLogoutRequest creates a SAML authentication request using
 // the HTTP-Redirect binding. It returns a URL that we will redirect the user to
 // in order to start the auth process.
-func (sp *ServiceProvider) MakeRedirectLogoutRequest(nameID, relayState string) (*url.URL, error) {
+func (sp *ServiceProviderImpl) MakeRedirectLogoutRequest(nameID, relayState string) (*url.URL, error) {
 	req, err := sp.MakeLogoutRequest(sp.GetSLOBindingLocation(HTTPRedirectBinding), nameID)
 	if err != nil {
 		return nil, err
@@ -1432,7 +1657,7 @@ func (r *LogoutRequest) Redirect(relayState string) *url.URL {
 // MakePostLogoutRequest creates a SAML authentication request using
 // the HTTP-POST binding. It returns HTML text representing an HTML form that
 // can be sent presented to a browser to initiate the logout process.
-func (sp *ServiceProvider) MakePostLogoutRequest(nameID, relayState string) ([]byte, error) {
+func (sp *ServiceProviderImpl) MakePostLogoutRequest(nameID, relayState string) ([]byte, error) {
 	req, err := sp.MakeLogoutRequest(sp.GetSLOBindingLocation(HTTPPostBinding), nameID)
 	if err != nil {
 		return nil, err
@@ -1477,7 +1702,7 @@ func (r *LogoutRequest) Post(relayState string) []byte {
 }
 
 // MakeLogoutResponse produces a new LogoutResponse object for idpURL and logoutRequestID.
-func (sp *ServiceProvider) MakeLogoutResponse(idpURL, logoutRequestID string) (*LogoutResponse, error) {
+func (sp *ServiceProviderImpl) MakeLogoutResponse(idpURL, logoutRequestID string) (*LogoutResponse, error) {
 	response := LogoutResponse{
 		ID:           fmt.Sprintf("id-%x", randomBytes(20)),
 		InResponseTo: logoutRequestID,
@@ -1506,7 +1731,7 @@ func (sp *ServiceProvider) MakeLogoutResponse(idpURL, logoutRequestID string) (*
 // MakeRedirectLogoutResponse creates a SAML LogoutResponse using
 // the HTTP-Redirect binding. It returns a URL that we will redirect the user to
 // for LogoutResponse.
-func (sp *ServiceProvider) MakeRedirectLogoutResponse(logoutRequestID, relayState string) (*url.URL, error) {
+func (sp *ServiceProviderImpl) MakeRedirectLogoutResponse(logoutRequestID, relayState string) (*url.URL, error) {
 	resp, err := sp.MakeLogoutResponse(sp.GetSLOBindingLocation(HTTPRedirectBinding), logoutRequestID)
 	if err != nil {
 		return nil, err
@@ -1546,7 +1771,7 @@ func (r *LogoutResponse) Redirect(relayState string) *url.URL {
 // MakePostLogoutResponse creates a SAML LogoutResponse using
 // the HTTP-POST binding. It returns HTML text representing an HTML form that
 // can be sent presented to a browser for LogoutResponse.
-func (sp *ServiceProvider) MakePostLogoutResponse(logoutRequestID, relayState string) ([]byte, error) {
+func (sp *ServiceProviderImpl) MakePostLogoutResponse(logoutRequestID, relayState string) ([]byte, error) {
 	resp, err := sp.MakeLogoutResponse(sp.GetSLOBindingLocation(HTTPPostBinding), logoutRequestID)
 	if err != nil {
 		return nil, err
@@ -1591,7 +1816,7 @@ func (r *LogoutResponse) Post(relayState string) []byte {
 }
 
 // SignLogoutResponse adds the `Signature` element to the `LogoutResponse`.
-func (sp *ServiceProvider) SignLogoutResponse(resp *LogoutResponse) error {
+func (sp *ServiceProviderImpl) SignLogoutResponse(resp *LogoutResponse) error {
 	signingContext, err := GetSigningContext(sp)
 	if err != nil {
 		return err
@@ -1608,7 +1833,7 @@ func (sp *ServiceProvider) SignLogoutResponse(resp *LogoutResponse) error {
 	return nil
 }
 
-func (sp *ServiceProvider) nameIDFormat() string {
+func (sp *ServiceProviderImpl) nameIDFormat() string {
 	var nameIDFormat string
 	switch sp.AuthnNameIDFormat {
 	case "":
@@ -1623,7 +1848,7 @@ func (sp *ServiceProvider) nameIDFormat() string {
 }
 
 // ValidateLogoutResponseRequest validates the LogoutResponse content from the request
-func (sp *ServiceProvider) ValidateLogoutResponseRequest(req *http.Request) error {
+func (sp *ServiceProviderImpl) ValidateLogoutResponseRequest(req *http.Request) error {
 	if data := req.URL.Query().Get("SAMLResponse"); data != "" {
 		return sp.ValidateLogoutResponseRedirect(data)
 	}
@@ -1637,7 +1862,7 @@ func (sp *ServiceProvider) ValidateLogoutResponseRequest(req *http.Request) erro
 }
 
 // ValidateLogoutResponseForm returns a nil error if the logout response is valid.
-func (sp *ServiceProvider) ValidateLogoutResponseForm(postFormData string) error {
+func (sp *ServiceProviderImpl) ValidateLogoutResponseForm(postFormData string) error {
 	retErr := &InvalidResponseError{
 		Now: TimeNow(),
 	}
@@ -1677,7 +1902,7 @@ func (sp *ServiceProvider) ValidateLogoutResponseForm(postFormData string) error
 //
 // URL Binding appears to be gzip / flate encoded
 // See https://www.oasis-open.org/committees/download.php/20645/sstc-saml-tech-overview-2%200-draft-10.pdf  6.6
-func (sp *ServiceProvider) ValidateLogoutResponseRedirect(queryParameterData string) error {
+func (sp *ServiceProviderImpl) ValidateLogoutResponseRedirect(queryParameterData string) error {
 	retErr := &InvalidResponseError{
 		Now: TimeNow(),
 	}
@@ -1719,7 +1944,7 @@ func (sp *ServiceProvider) ValidateLogoutResponseRedirect(queryParameterData str
 }
 
 // validateLogoutResponse validates the LogoutResponse fields. Returns a nil error if the LogoutResponse is valid.
-func (sp *ServiceProvider) validateLogoutResponse(resp *LogoutResponse) error {
+func (sp *ServiceProviderImpl) validateLogoutResponse(resp *LogoutResponse) error {
 	if resp.Destination != sp.SloURL.String() {
 		return fmt.Errorf("`Destination` does not match SloURL (expected %q)", sp.SloURL.String())
 	}

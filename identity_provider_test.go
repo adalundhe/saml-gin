@@ -108,13 +108,13 @@ func NewIdentityProviderTest(t *testing.T, opts ...idpTestOpts) *IdentityProvide
 
 	test.SPKey = mustParsePrivateKey(golden.Get(t, "sp_key.pem")).(*rsa.PrivateKey)
 	test.SPCertificate = mustParseCertificate(golden.Get(t, "sp_cert.pem"))
-	test.SP = ServiceProvider{
+	test.SP = NewServiceProvider(&ServiceProviderOpts{
 		Key:         test.SPKey,
 		Certificate: test.SPCertificate,
 		MetadataURL: mustParseURL("https://sp.example.com/saml2/metadata"),
 		AcsURL:      mustParseURL("https://sp.example.com/saml2/acs"),
 		IDPMetadata: &EntityDescriptor{},
-	}
+	})
 
 	test.Certificate = mustParseCertificate(golden.Get(t, "idp_cert.pem"))
 
@@ -125,7 +125,8 @@ func NewIdentityProviderTest(t *testing.T, opts ...idpTestOpts) *IdentityProvide
 		SSOURL:      mustParseURL("https://idp.example.com/saml/sso"),
 		ServiceProviderProvider: &mockServiceProviderProvider{
 			GetServiceProviderFunc: func(_ *http.Request, serviceProviderID string) (*EntityDescriptor, error) {
-				if serviceProviderID == test.SP.MetadataURL.String() {
+				metadataUrl := test.SP.GetMetadataURL()
+				if serviceProviderID == metadataUrl.String() {
 					return test.SP.Metadata(), nil
 				}
 				return nil, os.ErrNotExist
@@ -144,7 +145,7 @@ func NewIdentityProviderTest(t *testing.T, opts ...idpTestOpts) *IdentityProvide
 	}
 
 	// bind the service provider and the IDP
-	test.SP.IDPMetadata = test.IDP.Metadata()
+	test.SP.SetIDPMetadata(test.IDP.Metadata())
 	return &test
 }
 
@@ -815,7 +816,9 @@ func TestIDPIDPInitiatedNewSession(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	r, _ := http.NewRequest("GET", "https://idp.example.com/services/sp/whoami", nil)
-	test.IDP.ServeIDPInitiated(w, r, test.SP.MetadataURL.String(), "ThisIsTheRelayState")
+
+	metadataUrl := test.SP.GetMetadataURL()
+	test.IDP.ServeIDPInitiated(w, r, metadataUrl.String(), "ThisIsTheRelayState")
 	assert.Check(t, is.Equal(200, w.Code))
 	assert.Check(t, is.Equal("RelayState: ThisIsTheRelayState", w.Body.String()))
 }
@@ -833,7 +836,9 @@ func TestIDPIDPInitiatedExistingSession(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	r, _ := http.NewRequest("GET", "https://idp.example.com/services/sp/whoami", nil)
-	test.IDP.ServeIDPInitiated(w, r, test.SP.MetadataURL.String(), "ThisIsTheRelayState")
+
+	metadataUrl := test.SP.GetMetadataURL()
+	test.IDP.ServeIDPInitiated(w, r, metadataUrl.String(), "ThisIsTheRelayState")
 	assert.Check(t, is.Equal(200, w.Code))
 	golden.Assert(t, w.Body.String(), t.Name()+"_response")
 }

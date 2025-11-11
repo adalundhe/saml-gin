@@ -141,7 +141,9 @@ func (_m *MockMiddleware) GetServiceProvider() saml.ServiceProvider {
 	if rf, ok := ret.Get(0).(func() saml.ServiceProvider); ok {
 		r0 = rf()
 	} else {
-		r0 = ret.Get(0).(saml.ServiceProvider)
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(saml.ServiceProvider)
+		}
 	}
 
 	return r0

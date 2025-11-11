@@ -15,7 +15,7 @@ var _ RequestTracker = CookieRequestTracker{}
 // CookieRequestTracker tracks requests by setting a uniquely named
 // cookie for each request.
 type CookieRequestTracker struct {
-	ServiceProvider *saml.ServiceProvider
+	ServiceProvider saml.ServiceProvider
 	NamePrefix      string
 	Codec           TrackedRequestCodec
 	MaxAge          time.Duration
@@ -50,8 +50,8 @@ func (t CookieRequestTracker) TrackRequest(w http.ResponseWriter, r *http.Reques
 		MaxAge:   int(t.MaxAge.Seconds()),
 		HttpOnly: true,
 		SameSite: t.SameSite,
-		Secure:   t.ServiceProvider.AcsURL.Scheme == "https",
-		Path:     t.ServiceProvider.AcsURL.Path,
+		Secure:   t.ServiceProvider.GetAcsUrl().Scheme == "https",
+		Path:     t.ServiceProvider.GetAcsUrl().Path,
 	})
 
 	return trackedRequest.Index, nil
@@ -65,9 +65,9 @@ func (t CookieRequestTracker) StopTrackingRequest(w http.ResponseWriter, r *http
 		return err
 	}
 	cookie.Value = ""
-	cookie.Domain = t.ServiceProvider.AcsURL.Hostname()
+	cookie.Domain = t.ServiceProvider.GetAcsUrl().Hostname()
 	cookie.Expires = time.Unix(1, 0) // past time as close to epoch as possible, but not zero time.Time{}
-	cookie.Path = t.ServiceProvider.AcsURL.Path
+	cookie.Path = t.ServiceProvider.GetAcsUrl().Path
 	http.SetCookie(w, cookie)
 	return nil
 }
