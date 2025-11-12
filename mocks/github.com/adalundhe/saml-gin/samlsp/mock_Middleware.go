@@ -84,6 +84,51 @@ func (_c *MockMiddleware_CreateSessionFromAssertion_Call) RunAndReturn(run func(
 	return _c
 }
 
+// GetLogoutUrl provides a mock function with no fields
+func (_m *MockMiddleware) GetLogoutUrl() string {
+	ret := _m.Called()
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetLogoutUrl")
+	}
+
+	var r0 string
+	if rf, ok := ret.Get(0).(func() string); ok {
+		r0 = rf()
+	} else {
+		r0 = ret.Get(0).(string)
+	}
+
+	return r0
+}
+
+// MockMiddleware_GetLogoutUrl_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'GetLogoutUrl'
+type MockMiddleware_GetLogoutUrl_Call struct {
+	*mock.Call
+}
+
+// GetLogoutUrl is a helper method to define mock.On call
+func (_e *MockMiddleware_Expecter) GetLogoutUrl() *MockMiddleware_GetLogoutUrl_Call {
+	return &MockMiddleware_GetLogoutUrl_Call{Call: _e.mock.On("GetLogoutUrl")}
+}
+
+func (_c *MockMiddleware_GetLogoutUrl_Call) Run(run func()) *MockMiddleware_GetLogoutUrl_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *MockMiddleware_GetLogoutUrl_Call) Return(_a0 string) *MockMiddleware_GetLogoutUrl_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockMiddleware_GetLogoutUrl_Call) RunAndReturn(run func() string) *MockMiddleware_GetLogoutUrl_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // GetRequestTracker provides a mock function with no fields
 func (_m *MockMiddleware) GetRequestTracker() samlsp.RequestTracker {
 	ret := _m.Called()
