@@ -1,4 +1,4 @@
-package samlsp
+package samlsp_test
 
 import (
 	"bytes"
@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"testing"
 
+	samlsp "github.com/adalundhe/saml-gin/samlsp"
 	"gotest.tools/assert"
 	is "gotest.tools/assert/cmp"
 )
@@ -24,7 +25,7 @@ func TestFetchMetadata(t *testing.T) {
 
 	fmt.Println(testServer.URL + "/metadata")
 	u, _ := url.Parse(testServer.URL + "/metadata")
-	md, err := FetchMetadata(context.Background(), testServer.Client(), *u)
+	md, err := samlsp.FetchMetadata(context.Background(), testServer.Client(), *u)
 	assert.Check(t, err)
 	assert.Check(t, is.Equal("https://idp.testshib.org/idp/shibboleth", md.EntityID))
 }
@@ -42,7 +43,7 @@ func TestFetchMetadataRejectsInvalid(t *testing.T) {
 
 	fmt.Println(testServer.URL + "/metadata")
 	u, _ := url.Parse(testServer.URL + "/metadata")
-	md, err := FetchMetadata(context.Background(), testServer.Client(), *u)
+	md, err := samlsp.FetchMetadata(context.Background(), testServer.Client(), *u)
 	assert.Check(t, err != nil)
 	assert.Check(t, is.Nil(md))
 }

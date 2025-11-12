@@ -1,12 +1,14 @@
-package samlsp
+package samlsp_test
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"encoding/xml"
 	"net"
 	"net/http"
@@ -19,13 +21,50 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/loopfz/gadgeto/tonic"
 	dsig "github.com/russellhaering/goxmldsig"
+	"github.com/stretchr/testify/mock"
 	"gotest.tools/assert"
 	is "gotest.tools/assert/cmp"
 	"gotest.tools/golden"
 
 	"github.com/adalundhe/saml-gin"
+	samlsp "github.com/adalundhe/saml-gin/samlsp"
 	"github.com/adalundhe/saml-gin/testsaml"
+
+	samlMocks "github.com/adalundhe/saml-gin/mocks/github.com/adalundhe/saml-gin"
+	samlSpMocks "github.com/adalundhe/saml-gin/mocks/github.com/adalundhe/saml-gin/samlsp"
 )
+
+func mustParseURL(s string) url.URL {
+	rv, err := url.Parse(s)
+	if err != nil {
+		panic(err)
+	}
+	return *rv
+}
+
+func mustParsePrivateKey(pemStr []byte) crypto.Signer {
+	b, _ := pem.Decode(pemStr)
+	if b == nil {
+		panic("cannot parse PEM")
+	}
+	k, err := x509.ParsePKCS1PrivateKey(b.Bytes)
+	if err != nil {
+		panic(err)
+	}
+	return k
+}
+
+func mustParseCertificate(pemStr []byte) *x509.Certificate {
+	b, _ := pem.Decode(pemStr)
+	if b == nil {
+		panic("cannot parse PEM")
+	}
+	cert, err := x509.ParseCertificate(b.Bytes)
+	if err != nil {
+		panic(err)
+	}
+	return cert
+}
 
 type MiddlewareTest struct {
 	AuthnRequest          []byte
@@ -33,7 +72,7 @@ type MiddlewareTest struct {
 	Key                   *rsa.PrivateKey
 	Certificate           *x509.Certificate
 	IDPMetadata           []byte
-	Middleware            Middleware
+	Middleware            samlsp.Middleware
 	expectedSessionCookie string
 }
 
@@ -97,7 +136,7 @@ func NewMiddlewareTest(t *testing.T) *MiddlewareTest {
 		panic(err)
 	}
 
-	opts := Options{
+	opts := samlsp.Options{
 		URL:         mustParseURL("https://15661444.ngrok.io/"),
 		Key:         test.Key,
 		Certificate: test.Certificate,
@@ -105,18 +144,18 @@ func NewMiddlewareTest(t *testing.T) *MiddlewareTest {
 	}
 
 	var err error
-	test.Middleware, err = New(opts)
+	test.Middleware, err = samlsp.New(opts)
 	if err != nil {
 		panic(err)
 	}
 
-	sessionProvider := DefaultSessionProvider(opts)
-	sessionProvider.Name = "ttt"
-	sessionProvider.MaxAge = 7200 * time.Second
+	sessionProvider := samlsp.DefaultSessionProvider(opts)
+	sessionProvider.SetName("ttt")
+	sessionProvider.SetMaxAge(7200 * time.Second)
 
-	sessionCodec := sessionProvider.Codec.(JWTSessionCodec)
+	sessionCodec := sessionProvider.GetCodec().(samlsp.JWTSessionCodec)
 	sessionCodec.MaxAge = 7200 * time.Second
-	sessionProvider.Codec = sessionCodec
+	sessionProvider.SetCodec(sessionCodec)
 
 	test.Middleware.SetSession(sessionProvider)
 
@@ -136,11 +175,11 @@ func NewMiddlewareTest(t *testing.T) *MiddlewareTest {
 
 	test.Middleware.SetServiceProvider(serviceProvider)
 
-	var tc JWTSessionClaims
+	var tc samlsp.JWTSessionClaims
 	if err := json.Unmarshal(golden.Get(t, "token.json"), &tc); err != nil {
 		panic(err)
 	}
-	test.expectedSessionCookie, err = sessionProvider.Codec.Encode(tc)
+	test.expectedSessionCookie, err = sessionProvider.GetCodec().Encode(tc)
 	if err != nil {
 		panic(err)
 	}
@@ -149,8 +188,8 @@ func NewMiddlewareTest(t *testing.T) *MiddlewareTest {
 }
 
 func (test *MiddlewareTest) makeTrackedRequest(id string) string {
-	codec := test.Middleware.GetRequestTracker().(CookieRequestTracker).Codec
-	token, err := codec.Encode(TrackedRequest{
+	codec := test.Middleware.GetRequestTracker().(samlsp.CookieRequestTracker).Codec
+	token, err := codec.Encode(samlsp.TrackedRequest{
 		Index:         "KCosLjAyNDY4Ojw-QEJERkhKTE5QUlRWWFpcXmBiZGZoamxucHJ0dnh6",
 		SAMLRequestID: id,
 		URI:           "/frob",
@@ -310,8 +349,8 @@ func TestMiddlewareRequireAccountCreds(t *testing.T) {
 	r.Handle(http.MethodGet, "/saml2/metadata", tonic.Handler(test.Middleware.ServeMetadata, http.StatusFound))
 	r.Handle(http.MethodGet, "/saml2/acs", tonic.Handler(test.Middleware.ServeACS, http.StatusFound))
 	r.GET("/frob", handler, func(ctx *gin.Context) {
-		genericSession := SessionFromContext(ctx)
-		jwtSession := genericSession.(JWTSessionClaims)
+		genericSession := samlsp.SessionFromContext(ctx)
+		jwtSession := genericSession.(samlsp.JWTSessionClaims)
 		assert.Check(t, is.Equal("555-5555", jwtSession.Attributes.Get("telephoneNumber")))
 		assert.Check(t, is.Equal("And I", jwtSession.Attributes.Get("sn")))
 		assert.Check(t, is.Equal("urn:mace:dir:entitlement:common-lib-terms", jwtSession.Attributes.Get("eduPersonEntitlement")))
@@ -428,7 +467,7 @@ func TestMiddlewareRequireAccountPanicOnRequestToACS(t *testing.T) {
 func TestMiddlewareRequireAttribute(t *testing.T) {
 	test := NewMiddlewareTest(t)
 	requireAccount := test.Middleware.RequireAccount()
-	requireAttribute := RequireAttribute("eduPersonAffiliation", "Staff")
+	requireAttribute := samlsp.RequireAttribute("eduPersonAffiliation", "Staff")
 
 	r := getRouter(false)
 	r.Handle(http.MethodGet, "/saml2/metadata", tonic.Handler(test.Middleware.ServeMetadata, http.StatusFound))
@@ -455,7 +494,7 @@ func TestMiddlewareRequireAttributeWrongValue(t *testing.T) {
 	test := NewMiddlewareTest(t)
 
 	requireAccount := test.Middleware.RequireAccount()
-	requireAttribute := RequireAttribute("eduPersonAffiliation", "DomainAdmins")
+	requireAttribute := samlsp.RequireAttribute("eduPersonAffiliation", "DomainAdmins")
 
 	r := getRouter(false)
 	r.Handle(http.MethodGet, "/saml2/metadata", tonic.Handler(test.Middleware.ServeMetadata, http.StatusFound))
@@ -483,7 +522,7 @@ func TestMiddlewareRequireAttributeNotPresent(t *testing.T) {
 	test := NewMiddlewareTest(t)
 
 	requireAccount := test.Middleware.RequireAccount()
-	requireAttribute := RequireAttribute("valueThatDoesntExist", "doesntMatter")
+	requireAttribute := samlsp.RequireAttribute("valueThatDoesntExist", "doesntMatter")
 
 	r := getRouter(false)
 	r.Handle(http.MethodGet, "/saml2/metadata", tonic.Handler(test.Middleware.ServeMetadata, http.StatusFound))
@@ -511,7 +550,7 @@ func TestMiddlewareRequireAttributeMissingAccount(t *testing.T) {
 	test := NewMiddlewareTest(t)
 
 	requireAccount := test.Middleware.RequireAccount()
-	requireAttribute := RequireAttribute("eduPersonAffiliation", "DomainAdmins")
+	requireAttribute := samlsp.RequireAttribute("eduPersonAffiliation", "DomainAdmins")
 
 	r := getRouter(false)
 	r.Handle(http.MethodGet, "/saml2/metadata", tonic.Handler(test.Middleware.ServeMetadata, http.StatusFound))
@@ -566,7 +605,7 @@ func TestMiddlewareDefaultCookieDomainIPv4(t *testing.T) {
 	test := NewMiddlewareTest(t)
 	ipv4Loopback := net.IP{127, 0, 0, 1}
 
-	sp := DefaultSessionProvider(Options{
+	sp := samlsp.DefaultSessionProvider(samlsp.Options{
 		URL: mustParseURL("https://" + net.JoinHostPort(ipv4Loopback.String(), "54321")),
 		Key: test.Key,
 	})
@@ -586,7 +625,7 @@ func TestMiddlewareDefaultCookieDomainIPv6(t *testing.T) {
 
 	test := NewMiddlewareTest(t)
 
-	sp := DefaultSessionProvider(Options{
+	sp := samlsp.DefaultSessionProvider(samlsp.Options{
 		URL: mustParseURL("https://" + net.JoinHostPort(net.IPv6loopback.String(), "54321")),
 		Key: test.Key,
 	})
@@ -677,4 +716,72 @@ func TestMiddlewareHandlesInvalidResponse(t *testing.T) {
 	assert.Check(t, is.Equal("Forbidden: Authentication failed", err.Error()))
 	assert.Check(t, is.Equal("", redirectUri))
 	assert.Check(t, is.Equal("", resp.Header().Get("Set-Cookie")))
+}
+
+func TestMiddlewareLogout(t *testing.T) {
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Request = &http.Request{}
+
+	logoutUrl, err := url.Parse("https://test.com/home")
+	assert.NilError(t, err)
+
+	claims := samlsp.JWTSessionClaims{}
+	claims.Subject = "test"
+
+	mockServiceProvider := &samlMocks.MockServiceProvider{}
+	mockServiceProvider.On(
+		"GetSLOBindingLocation",
+		mock.Anything,
+	).Return("")
+
+	mockServiceProvider.On(
+		"MakeLogoutRequest",
+		mock.Anything,
+		mock.Anything,
+	).Return(
+		&saml.LogoutRequest{},
+		nil,
+	)
+
+	mockServiceProvider.On(
+		"MakeRedirectLogoutRequest",
+		mock.Anything,
+		mock.Anything,
+	).Return(logoutUrl, nil)
+
+	mockSessionProvider := &samlSpMocks.MockSessionProvider{}
+	mockSessionProvider.On(
+		"CreateSession",
+		ctx,
+		mock.Anything,
+	).Return(nil)
+
+	mockSessionProvider.On(
+		"GetSession",
+		ctx,
+	).Return(claims, nil)
+
+	mockSessionProvider.On(
+		"DeleteSession",
+		ctx,
+	).Return(nil)
+
+	middleware, err := samlsp.New(samlsp.Options{
+		OverrideSessionProvider: mockSessionProvider,
+		OverrideServiceProvider: mockServiceProvider,
+	})
+
+	assert.NilError(t, err)
+
+	t.Run("It clears cookies and the session on logout", func(t *testing.T) {
+		result, err := middleware.Logout(ctx)
+		assert.NilError(t, err)
+
+		assert.Check(t, is.Equal(logoutUrl.String(), result.String()))
+
+	})
+
 }

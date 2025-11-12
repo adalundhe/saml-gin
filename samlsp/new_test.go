@@ -24,8 +24,7 @@ func TestNewCanAcceptCookieName(t *testing.T) {
 			}
 			sp, err := New(opts)
 			assert.Assert(t, err)
-			cookieProvider := sp.GetSession().(CookieSessionProvider)
-			assert.Equal(t, tc.expected, cookieProvider.Name)
+			assert.Equal(t, tc.expected, sp.GetSession().GetName())
 
 		})
 	}

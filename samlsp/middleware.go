@@ -3,11 +3,14 @@ package samlsp
 import (
 	"bytes"
 	"encoding/xml"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 
 	"github.com/adalundhe/saml-gin"
 	"github.com/gin-gonic/gin"
+	"github.com/juju/errors"
 )
 
 // Middleware implements middleware than allows a web application
@@ -47,6 +50,7 @@ type Middleware interface {
 	ServeACS(c *gin.Context) (string, error)
 	RequireAccount() gin.HandlerFunc
 	HandleStartAuthFlow(c *gin.Context)
+	GetLogoutUrl() string
 	CreateSessionFromAssertion(c *gin.Context, assertion *saml.Assertion, redirectURI string) (string, error)
 	GetSession() SessionProvider
 	GetRequestTracker() RequestTracker
@@ -55,6 +59,7 @@ type Middleware interface {
 	SetRequestTracker(tracker RequestTracker)
 	SetServiceProvider(sp saml.ServiceProvider)
 	SetOnError(onErr func(ctx *gin.Context, err error) error)
+	Logout(ctx *gin.Context) (*url.URL, error)
 }
 
 type MiddlewareImpl struct {
@@ -68,6 +73,11 @@ type MiddlewareImpl struct {
 	ForceRedirectUrl string
 	ACSHandler       gin.HandlerFunc
 	MetadataHandler  gin.HandlerFunc
+	LogoutUrl        *url.URL
+}
+
+func (m *MiddlewareImpl) GetLogoutUrl() string {
+	return m.LogoutUrl.String()
 }
 
 func (m *MiddlewareImpl) GetSession() SessionProvider {
@@ -269,6 +279,38 @@ func (m *MiddlewareImpl) CreateSessionFromAssertion(c *gin.Context, assertion *s
 
 	slog.Info("Redirecting to:", slog.Any("url", redirectURI))
 	return redirectURI, nil
+}
+
+func (m *MiddlewareImpl) Logout(ctx *gin.Context) (*url.URL, error) {
+	sessionProvider := m.GetSession()
+	session, err := sessionProvider.GetSession(ctx)
+	if err != nil {
+		return nil, errors.NewForbidden(err, "Could not get signout url session")
+	}
+	//Get the JWT information part 2
+	attr := session.(JWTSessionClaims)
+
+	logoutUrl := m.LogoutUrl
+	if logoutUrl == nil {
+		logoutUrl, err = m.GetServiceProvider().MakeRedirectLogoutRequest(attr.Subject, "")
+	}
+
+	//use this as the name for the logout request
+
+	if err != nil {
+		return nil, fmt.Errorf("error getting signouturl: %s", err.Error())
+	}
+
+	//delete the session token from teh browser
+
+	if err := sessionProvider.DeleteSession(ctx); err != nil {
+		return nil, fmt.Errorf("error deleting session: %s", err.Error())
+	}
+
+	//redirect to the IDP Single log out URLwith the SAMLRequests for logout embedded
+	// http.Redirect(w, r, url.String(), http.StatusFound)
+	return logoutUrl, nil
+
 }
 
 // RequireAttribute returns a middleware function that requires that the

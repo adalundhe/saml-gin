@@ -18,24 +18,27 @@ import (
 
 // Options represents the parameters for creating a new middleware
 type Options struct {
-	EntityID              string
-	URL                   url.URL
-	Key                   crypto.Signer
-	Certificate           *x509.Certificate
-	Intermediates         []*x509.Certificate
-	HTTPClient            *http.Client
-	AllowIDPInitiated     bool
-	DefaultRedirectURI    string
-	IDPMetadata           *saml.EntityDescriptor
-	SignRequest           bool
-	UseArtifactResponse   bool
-	ForceAuthn            bool // TODO(ross): this should be *bool
-	RequestedAuthnContext *saml.RequestedAuthnContext
-	CookieSameSite        http.SameSite
-	CookieName            string
-	RelayStateFunc        func(w http.ResponseWriter, r *http.Request) string
-	LogoutBindings        []string
-	ForceRedirectUrl      *url.URL
+	EntityID                string
+	URL                     url.URL
+	Key                     crypto.Signer
+	Certificate             *x509.Certificate
+	Intermediates           []*x509.Certificate
+	HTTPClient              *http.Client
+	AllowIDPInitiated       bool
+	DefaultRedirectURI      string
+	IDPMetadata             *saml.EntityDescriptor
+	SignRequest             bool
+	UseArtifactResponse     bool
+	ForceAuthn              bool // TODO(ross): this should be *bool
+	RequestedAuthnContext   *saml.RequestedAuthnContext
+	CookieSameSite          http.SameSite
+	CookieName              string
+	RelayStateFunc          func(w http.ResponseWriter, r *http.Request) string
+	LogoutBindings          []string
+	LogoutUrl               *url.URL
+	ForceRedirectUrl        *url.URL
+	OverrideSessionProvider SessionProvider
+	OverrideServiceProvider saml.ServiceProvider
 }
 
 func getDefaultSigningMethod(signer crypto.Signer) jwt.SigningMethod {
@@ -64,12 +67,12 @@ func DefaultSessionCodec(opts Options) JWTSessionCodec {
 
 // DefaultSessionProvider returns the default SessionProvider for the provided options,
 // a CookieSessionProvider configured to store sessions in a cookie.
-func DefaultSessionProvider(opts Options) CookieSessionProvider {
+func DefaultSessionProvider(opts Options) SessionProvider {
 	cookieName := opts.CookieName
 	if cookieName == "" {
 		cookieName = defaultSessionCookieName
 	}
-	return CookieSessionProvider{
+	return &CookieSessionProvider{
 		Name:     cookieName,
 		Domain:   opts.URL.Host,
 		MaxAge:   defaultSessionMaxAge,
@@ -181,14 +184,25 @@ func New(opts Options) (Middleware, error) {
 		forceRedirectUrl = opts.ForceRedirectUrl.String()
 	}
 
+	serviceProvider := opts.OverrideServiceProvider
+	if serviceProvider == nil {
+		serviceProvider = DefaultServiceProvider(opts)
+	}
+
+	sessionProvider := opts.OverrideSessionProvider
+	if sessionProvider == nil {
+		sessionProvider = DefaultSessionProvider(opts)
+	}
+
 	m := &MiddlewareImpl{
-		ServiceProvider:  DefaultServiceProvider(opts),
+		ServiceProvider:  serviceProvider,
 		Binding:          "",
 		ResponseBinding:  saml.HTTPPostBinding,
 		OnError:          DefaultOnError,
-		Session:          DefaultSessionProvider(opts),
+		Session:          sessionProvider,
 		AssertionHandler: DefaultAssertionHandler(opts),
 		ForceRedirectUrl: forceRedirectUrl,
+		LogoutUrl:        opts.LogoutUrl,
 	}
 	m.RequestTracker = DefaultRequestTracker(opts, m.ServiceProvider)
 	if opts.UseArtifactResponse {

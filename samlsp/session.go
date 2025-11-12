@@ -3,6 +3,7 @@ package samlsp
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/adalundhe/saml-gin"
 	"github.com/gin-gonic/gin"
@@ -27,6 +28,12 @@ type SessionProvider interface {
 	// CreateSession is called when we have received a valid SAML assertion and
 	// should create a new session and modify the http response accordingly, e.g. by
 	// setting a cookie.
+	GetName() string
+	SetName(name string)
+	GetMaxAge() time.Duration
+	SetMaxAge(age time.Duration)
+	GetCodec() SessionCodec
+	SetCodec(codec SessionCodec)
 	CreateSession(ctx *gin.Context, assertion *saml.Assertion) error
 
 	// DeleteSession is called to modify the response such that it removed the current
